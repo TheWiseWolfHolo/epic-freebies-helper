@@ -31,6 +31,7 @@ URL_LOGIN = (
 )
 URL_CART = "https://store.epicgames.com/en-US/cart"
 URL_CART_SUCCESS = "https://store.epicgames.com/en-US/cart/success"
+URL_ORDER_HISTORY = "https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory"
 
 
 URL_PROMOTIONS = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
@@ -156,8 +157,49 @@ class EpicAgent:
             )
             return None
 
+    async def _probe_login_status_from_order_history(self) -> str | None:
+        try:
+            response = await self.page.context.request.get(URL_ORDER_HISTORY, timeout=15000)
+        except Exception as err:
+            logger.warning("Failed to probe Epic login state via order history | err={}", err)
+            return None
+
+        if response.status in {401, 403}:
+            logger.warning(
+                "Epic order-history probe reports unauthenticated session | status={}",
+                response.status,
+            )
+            return "false"
+
+        if not response.ok:
+            logger.warning(
+                "Epic order-history probe returned non-OK status | status={}",
+                response.status,
+            )
+            return None
+
+        try:
+            data = await response.json()
+        except Exception as err:
+            text = ""
+            with suppress(Exception):
+                text = (await response.text()).lower()
+            if "/id/login" in text or "sign in" in text or "login" in text:
+                logger.warning("Epic order-history probe returned a login page")
+                return "false"
+            logger.warning("Epic order-history probe returned unexpected payload | err={}", err)
+            return None
+
+        if isinstance(data, dict) and isinstance(data.get("orders"), list):
+            logger.success("Epic login state verified via order-history probe")
+            return "true"
+
+        logger.warning("Epic order-history probe JSON did not contain an orders list")
+        return None
+
     async def _wait_for_claim_page_login_state(self, timeout_seconds: int = 45) -> str:
         deadline = time.monotonic() + timeout_seconds
+        next_probe_at = 0.0
 
         while time.monotonic() < deadline:
             if self._needs_privacy_policy_correction():
@@ -171,6 +213,13 @@ class EpicAgent:
             status = await self._get_login_status(timeout_ms=1500)
             if status in {"true", "false"}:
                 return status
+
+            now = time.monotonic()
+            if now >= next_probe_at:
+                status = await self._probe_login_status_from_order_history()
+                if status in {"true", "false"}:
+                    return status
+                next_probe_at = now + 5000
 
             await self.page.wait_for_timeout(500)
 
@@ -215,7 +264,7 @@ class EpicAgent:
             return
         completed_orders: List[OrderItem] = []
         try:
-            await self.page.goto("https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory")
+            await self.page.goto(URL_ORDER_HISTORY)
             text_content = await self.page.text_content("//pre")
             data = json.loads(text_content)
             for _order in data["orders"]:
@@ -1224,7 +1273,7 @@ class EpicGames:
     async def _is_promotion_in_order_history(self, promotion: PromotionGame) -> bool:
         try:
             await self.page.goto(
-                "https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory",
+                URL_ORDER_HISTORY,
                 wait_until="domcontentloaded",
                 timeout=15000,
             )

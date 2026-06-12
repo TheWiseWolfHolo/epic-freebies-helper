@@ -696,3 +696,19 @@
   - 将原 GLM 请求桥接抽成通用 OpenAI-compatible 客户端，GLM 继续沿用原字段，OpenAI-compatible 中转使用独立字段。
   - GitHub Actions 入口新增 `OPENAI_*` secrets 注入，Docker 示例改为默认展示 OpenAI-compatible 配置。
   - 未改变 Epic 登录、领取、结账状态机逻辑。
+
+### 2026-06-12 领取流程登录态判定兜底
+
+- 现象：
+  - GitHub Actions 使用 OpenAI-compatible 中转完成登录 hCaptcha、账号校验与商店 session 校验后，进入领取流程。
+  - 领取页 `https://store.epicgames.com/free-games?lang=en-US` 长时间未出现 `//egs-navigation`，导致流程无法判断登录态并退出。
+- 根因判断：
+  - 领取流程只依赖页面自定义元素 `egs-navigation[isloggedin]` 判断登录态；当 Epic 商店页结构或加载顺序变化时，已验证的 session 会被误判成不可判定。
+  - 后续订单历史同步本身依赖 Epic account 订单接口，因此该接口更适合做 cookie/session 的运行态兜底探测。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 保留 `egs-navigation` 作为优先判断。
+  - 当领取页无法读取 `egs-navigation` 时，通过当前 Playwright browser context 请求 Epic 订单历史接口；返回订单列表则判定 session 已登录，401/403 或登录页则判定未登录。
+  - 将订单历史 URL 抽为常量，避免领取流程中同一端点重复硬编码。
