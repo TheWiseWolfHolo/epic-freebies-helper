@@ -56,6 +56,26 @@ OPENAI_COMPATIBLE_VISUAL_COORDINATE_INSTRUCTION = (
     "a bounding box or a drag path."
 )
 
+OPENAI_COMPATIBLE_SCHEMA_INSTRUCTIONS = {
+    "ChallengeRouterResult": (
+        "Return only a JSON object with keys challenge_prompt and challenge_type. "
+        "challenge_type must be one of image_label_single_select, image_label_multi_select, "
+        "image_drag_single, or image_drag_multi. Do not return coordinates, boxes, arrays, "
+        "or explanatory text for this routing schema."
+    ),
+    "ImageDragDropChallenge": (
+        "Return only a JSON object with keys challenge_prompt and paths. "
+        "paths must be an array of objects shaped as "
+        '{"start_point":{"x":number,"y":number},"end_point":{"x":number,"y":number}}. '
+        "Do not use point_2d, box_2d, answer, coordinates, moves, or explanatory text."
+    ),
+    "ImageAreaSelectChallenge": (
+        "Return only a JSON object with keys challenge_prompt and points. "
+        'points must be an array of objects shaped as {"x":number,"y":number}. '
+        "Do not use box_2d, bbox_2d, answer, or explanatory text."
+    ),
+}
+
 
 def _ensure_list(value: Any) -> list[Any]:
     if value is None:
@@ -1020,6 +1040,12 @@ class _OpenAICompatibleAsyncModels:
 
         if has_image:
             system_messages.append(OPENAI_COMPATIBLE_VISUAL_COORDINATE_INSTRUCTION)
+
+        schema = getattr(config, "response_schema", None)
+        schema_name = getattr(schema, "__name__", "")
+        schema_instruction = OPENAI_COMPATIBLE_SCHEMA_INSTRUCTIONS.get(schema_name)
+        if schema_instruction:
+            system_messages.append(schema_instruction)
 
         if system_messages:
             messages.insert(0, {"role": "system", "content": "\n\n".join(system_messages)})

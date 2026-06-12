@@ -728,3 +728,4 @@
   - 将 `classification`、`challengeType`、`task_type`、`type` 等字段视为 challenge type 候选。
   - 支持模型把单个结构化对象包在数组中返回。
   - 将 `moves` / `move` 视为拖拽路径字段别名，兼容模型返回 `{moves: [{start, end}]}` 的形状。
+  - 为 OpenAI-compatible 请求按 `response_schema` 追加精确输出约束，避免题型路由返回坐标、拖拽解题返回单点或 bbox。
