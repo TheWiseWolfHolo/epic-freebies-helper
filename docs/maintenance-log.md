@@ -729,3 +729,14 @@
   - 支持模型把单个结构化对象包在数组中返回。
   - 将 `moves` / `move` 视为拖拽路径字段别名，兼容模型返回 `{moves: [{start, end}]}` 的形状。
   - 为 OpenAI-compatible 请求按 `response_schema` 追加精确输出约束，避免题型路由返回坐标、拖拽解题返回单点或 bbox。
+
+### 2026-06-12 GitHub Actions 每三天巡检
+
+- 现象：
+  - 用户希望不只等每周四周免刷新，也能覆盖 Epic 临时免费活动。
+- 改动文件：
+  - `.github/workflows/epic-gamer.yml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - GitHub Actions cron 从每周四 UTC 15:20 改为每 3 天 UTC 15:20。
+  - 北京时间对应为运行日 23:20。
