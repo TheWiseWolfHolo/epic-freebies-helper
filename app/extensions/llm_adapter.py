@@ -47,7 +47,7 @@ CHALLENGE_TYPE_FIELD_ALIASES = (
 
 POINTS_ALIASES = ("points", "point", "coordinates", "Coordinates")
 
-PATHS_ALIASES = ("paths", "path", "coordinates", "Coordinates")
+PATHS_ALIASES = ("paths", "path", "moves", "move", "coordinates", "Coordinates")
 
 OPENAI_COMPATIBLE_VISUAL_COORDINATE_INSTRUCTION = (
     "For image coordinate challenges, read the gray coordinate grid printed on the image. "
