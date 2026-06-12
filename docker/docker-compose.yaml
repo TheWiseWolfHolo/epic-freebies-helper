@@ -14,14 +14,19 @@ services:
       # ----------------------------------------
       - EPIC_EMAIL=你的邮箱@example.com
       - EPIC_PASSWORD=你的密码
-      - GEMINI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxx # 使用 GLM 时可删除这一行
 
       # ----------------------------------------
       # LLM 提供方配置
       # ----------------------------------------
-      - LLM_PROVIDER=gemini
-      - GEMINI_BASE_URL=https://aihubmix.com
-      - GEMINI_MODEL=gemini-2.5-pro
+      - LLM_PROVIDER=openai
+      - OPENAI_API_KEY=your_openai_compatible_key
+      - OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
+      - OPENAI_MODEL=gpt-4o
+      # 如果使用 Gemini / AiHubMix，请改成下面这组
+      # - LLM_PROVIDER=gemini
+      # - GEMINI_API_KEY=your_gemini_key
+      # - GEMINI_BASE_URL=https://aihubmix.com
+      # - GEMINI_MODEL=gemini-2.5-pro
       # 如果使用 GLM，请改成下面这组
       # - LLM_PROVIDER=glm
       # - GLM_API_KEY=your_glm_api_key
@@ -39,10 +44,10 @@ services:
       - RETRY_ON_FAILURE=true
       - WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS=1500
       - CONSTRAINT_RESPONSE_SCHEMA=true
-      - CHALLENGE_CLASSIFIER_MODEL=gemini-2.5-flash
-      - IMAGE_CLASSIFIER_MODEL=gemini-2.5-pro
-      - SPATIAL_POINT_REASONER_MODEL=gemini-2.5-pro
-      - SPATIAL_PATH_REASONER_MODEL=gemini-2.5-pro
+      - CHALLENGE_CLASSIFIER_MODEL=
+      - IMAGE_CLASSIFIER_MODEL=
+      - SPATIAL_POINT_REASONER_MODEL=
+      - SPATIAL_PATH_REASONER_MODEL=
       - IMAGE_CLASSIFIER_THINKING_BUDGET=970
       - SPATIAL_POINT_THINKING_BUDGET=1387
       - SPATIAL_PATH_THINKING_BUDGET=1652

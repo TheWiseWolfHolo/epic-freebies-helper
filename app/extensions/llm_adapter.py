@@ -40,7 +40,7 @@ POINTS_ALIASES = ("points", "point", "coordinates", "Coordinates")
 
 PATHS_ALIASES = ("paths", "path", "coordinates", "Coordinates")
 
-GLM_VISUAL_COORDINATE_INSTRUCTION = (
+OPENAI_COMPATIBLE_VISUAL_COORDINATE_INSTRUCTION = (
     "For image coordinate challenges, read the gray coordinate grid printed on the image. "
     "Return final JSON coordinates in that printed grid coordinate system, not local image "
     "pixels. Prefer the center of the target object unless the schema explicitly requires "
@@ -874,22 +874,34 @@ class _PatchedResponse:
         return {"text": self.text, "parsed": parsed, "raw": self._raw}
 
 
-class _GLMAsyncFiles:
-    def __init__(self, storage: dict[str, dict[str, Any]]):
+class _OpenAICompatibleAsyncFiles:
+    def __init__(self, storage: dict[str, dict[str, Any]], uri_scheme: str):
         self._storage = storage
+        self._uri_scheme = uri_scheme
 
     async def upload(self, file: Any, **kwargs) -> _UploadedFile:
         content = _load_binary(file)
-        uri = f"glm-local://{id(content)}"
+        uri = f"{self._uri_scheme}://{id(content)}"
         mime_type = kwargs.get("mime_type") or _guess_mime_type(file)
         self._storage[uri] = {"content": content, "mime_type": mime_type}
         return _UploadedFile(uri=uri, mime_type=mime_type)
 
 
-class _GLMAsyncModels:
-    def __init__(self, settings: Any, storage: dict[str, dict[str, Any]]):
+class _OpenAICompatibleAsyncModels:
+    def __init__(
+        self,
+        settings: Any,
+        storage: dict[str, dict[str, Any]],
+        *,
+        provider_name: str,
+        api_key_field: str,
+        base_url_field: str,
+    ):
         self._settings = settings
         self._storage = storage
+        self._provider_name = provider_name
+        self._api_key_field = api_key_field
+        self._base_url_field = base_url_field
 
     def _to_image_part(self, payload: bytes, mime_type: str) -> dict[str, Any]:
         encoded = base64.b64encode(payload).decode("utf-8")
@@ -946,7 +958,7 @@ class _GLMAsyncModels:
             messages.append({"role": role, "content": items})
 
         if has_image:
-            system_messages.append(GLM_VISUAL_COORDINATE_INSTRUCTION)
+            system_messages.append(OPENAI_COMPATIBLE_VISUAL_COORDINATE_INSTRUCTION)
 
         if system_messages:
             messages.insert(0, {"role": "system", "content": "\n\n".join(system_messages)})
@@ -968,7 +980,11 @@ class _GLMAsyncModels:
         if getattr(config, "response_schema", None) is not None:
             payload["response_format"] = {"type": "json_object"}
 
-        if getattr(config, "thinking_config", None) is not None and model.startswith("glm-4.5"):
+        if (
+            self._provider_name == "GLM"
+            and getattr(config, "thinking_config", None) is not None
+            and model.startswith("glm-4.5")
+        ):
             payload["thinking"] = {"type": "enabled"}
 
         payload.update({k: v for k, v in kwargs.items() if k not in {"config"}})
@@ -977,7 +993,7 @@ class _GLMAsyncModels:
     def _extract_text(self, data: dict[str, Any]) -> str:
         choices = data.get("choices") or []
         if not choices:
-            raise ValueError("GLM response does not contain choices")
+            raise ValueError(f"{self._provider_name} response does not contain choices")
 
         message = choices[0].get("message") or {}
         content = message.get("content")
@@ -992,7 +1008,7 @@ class _GLMAsyncModels:
                     parts.append(item.get("text", ""))
             return "\n".join(parts).strip()
 
-        raise ValueError("GLM response content is empty")
+        raise ValueError(f"{self._provider_name} response content is empty")
 
     def _parse_response(self, text: str, config: Any) -> Any:
         schema = getattr(config, "response_schema", None)
@@ -1016,7 +1032,11 @@ class _GLMAsyncModels:
                         text,
                     )
                 else:
-                    logger.warning("GLM structured parse fallback failed | raw_text={}", text[:500])
+                    logger.warning(
+                        "{} structured parse fallback failed | raw_text={}",
+                        self._provider_name,
+                        text[:500],
+                    )
                     return None
 
         if isinstance(schema, type) and issubclass(schema, BaseModel):
@@ -1024,7 +1044,7 @@ class _GLMAsyncModels:
 
         return payload
 
-    def _log_glm_error(self, response: httpx.Response):
+    def _log_provider_error(self, response: httpx.Response):
         body = response.text[:2000]
         code = ""
         message = ""
@@ -1036,7 +1056,8 @@ class _GLMAsyncModels:
 
         if response.status_code == 429 or code in {"1302", "1303", "1304", "1308", "1113"}:
             logger.error(
-                "GLM quota/rate limit issue | http_status={} | code={} | message={}",
+                "{} quota/rate limit issue | http_status={} | code={} | message={}",
+                self._provider_name,
                 response.status_code,
                 code,
                 message or body,
@@ -1045,7 +1066,8 @@ class _GLMAsyncModels:
 
         if response.status_code in {401, 403} or code in {"1000", "1001", "1002", "1003", "1004"}:
             logger.error(
-                "GLM auth issue | http_status={} | code={} | message={}",
+                "{} auth issue | http_status={} | code={} | message={}",
+                self._provider_name,
                 response.status_code,
                 code,
                 message or body,
@@ -1053,28 +1075,33 @@ class _GLMAsyncModels:
             return
 
         logger.error(
-            "GLM request failed | status={} | code={} | body={}", response.status_code, code, body
+            "{} request failed | status={} | code={} | body={}",
+            self._provider_name,
+            response.status_code,
+            code,
+            body,
         )
 
     async def generate_content(self, model: str, contents: Any, **kwargs) -> _PatchedResponse:
         config = kwargs.pop("config", None)
         if config is None:
-            raise ValueError("config is required for GLM compatibility mode")
+            raise ValueError(f"config is required for {self._provider_name} compatibility mode")
 
-        endpoint = self._settings.GLM_BASE_URL.rstrip("/")
+        endpoint = getattr(self._settings, self._base_url_field).rstrip("/")
         if not endpoint.endswith("/chat/completions"):
             endpoint = f"{endpoint}/chat/completions"
 
+        api_key = getattr(self._settings, self._api_key_field)
         payload = self._build_payload(model=model, contents=contents, config=config, kwargs=kwargs)
         headers = {
-            "Authorization": f"Bearer {self._settings.GLM_API_KEY.get_secret_value()}",
+            "Authorization": f"Bearer {api_key.get_secret_value()}",
             "Content-Type": "application/json",
         }
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             response = await client.post(endpoint, headers=headers, json=payload)
             if response.is_error:
-                self._log_glm_error(response)
+                self._log_provider_error(response)
                 response.raise_for_status()
             data = response.json()
 
@@ -1083,18 +1110,48 @@ class _GLMAsyncModels:
         return _PatchedResponse(text=text, parsed=parsed, raw=data)
 
 
-class _GLMAsyncNamespace:
-    def __init__(self, settings: Any, storage: dict[str, dict[str, Any]]):
-        self.files = _GLMAsyncFiles(storage)
-        self.models = _GLMAsyncModels(settings, storage)
+class _OpenAICompatibleAsyncNamespace:
+    def __init__(
+        self,
+        settings: Any,
+        storage: dict[str, dict[str, Any]],
+        *,
+        provider_name: str,
+        api_key_field: str,
+        base_url_field: str,
+        uri_scheme: str,
+    ):
+        self.files = _OpenAICompatibleAsyncFiles(storage, uri_scheme)
+        self.models = _OpenAICompatibleAsyncModels(
+            settings,
+            storage,
+            provider_name=provider_name,
+            api_key_field=api_key_field,
+            base_url_field=base_url_field,
+        )
 
 
-class GLMCompatibleGenAIClient:
-    def __init__(self, *args, **kwargs):
+class OpenAICompatibleGenAIClient:
+    def __init__(
+        self,
+        *args,
+        provider_name: str,
+        api_key_field: str,
+        base_url_field: str,
+        uri_scheme: str,
+        **kwargs,
+    ):
         from settings import settings
 
         self._storage: dict[str, dict[str, Any]] = {}
-        self.aio = _GLMAsyncNamespace(settings, self._storage)
+        self.aio = _OpenAICompatibleAsyncNamespace(
+            settings,
+            self._storage,
+            provider_name=provider_name,
+            api_key_field=api_key_field,
+            base_url_field=base_url_field,
+            uri_scheme=uri_scheme,
+        )
 
 
 def apply_gemini_patch(settings: Any):
@@ -1164,12 +1221,51 @@ def apply_glm_patch(settings: Any):
     try:
         from google import genai
 
+        class GLMCompatibleGenAIClient(OpenAICompatibleGenAIClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(
+                    *args,
+                    provider_name="GLM",
+                    api_key_field="GLM_API_KEY",
+                    base_url_field="GLM_BASE_URL",
+                    uri_scheme="glm-local",
+                    **kwargs,
+                )
+
         genai.Client = GLMCompatibleGenAIClient
         logger.info(
             f"🚀 GLM 兼容补丁已应用 | 模型: {settings.GLM_MODEL} | 地址: {settings.GLM_BASE_URL}"
         )
     except Exception as exc:
         logger.error(f"❌ GLM 兼容补丁加载失败: {exc}")
+
+
+def apply_openai_patch(settings: Any):
+    if not settings.OPENAI_API_KEY:
+        return
+
+    try:
+        from google import genai
+
+        class OpenAIRelayGenAIClient(OpenAICompatibleGenAIClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(
+                    *args,
+                    provider_name="OpenAI-compatible",
+                    api_key_field="OPENAI_API_KEY",
+                    base_url_field="OPENAI_BASE_URL",
+                    uri_scheme="openai-local",
+                    **kwargs,
+                )
+
+        genai.Client = OpenAIRelayGenAIClient
+        logger.info(
+            "🚀 OpenAI 兼容补丁已应用 | 模型: {} | 地址: {}",
+            settings.OPENAI_MODEL,
+            settings.OPENAI_BASE_URL,
+        )
+    except Exception as exc:
+        logger.error(f"❌ OpenAI 兼容补丁加载失败: {exc}")
 
 
 def apply_llm_patch(settings: Any):
@@ -1179,6 +1275,20 @@ def apply_llm_patch(settings: Any):
             logger.error("LLM provider misconfigured | LLM_PROVIDER=glm but GLM_API_KEY is empty")
             return
         apply_glm_patch(settings)
+        return
+
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            logger.error(
+                "LLM provider misconfigured | LLM_PROVIDER=openai but OPENAI_API_KEY is empty"
+            )
+            return
+        if not settings.OPENAI_BASE_URL:
+            logger.error(
+                "LLM provider misconfigured | LLM_PROVIDER=openai but OPENAI_BASE_URL is empty"
+            )
+            return
+        apply_openai_patch(settings)
         return
 
     if provider == "gemini" and not settings.GEMINI_API_KEY:

@@ -676,3 +676,23 @@
   - `Rogue Waters` 通过 `ADD TO LIBRARY` 即时结账后确认 `IN LIBRARY`。
   - `Songs of Conquest` 结账 hCaptcha 首轮失败后重试成功，验证码后标准点击被 overlay 拦截，但 force 点击推进并最终确认 `IN LIBRARY`。
   - 最终日志为 `Confirmed 2 instant claim(s)`、`Browser tasks execution finished successfully`、`Scheduler is disabled, deployment completed`，进程退出码为 0。
+
+### 2026-06-12 OpenAI-compatible 中转 provider 支持
+
+- 现象：
+  - 部署方不希望使用智谱 `GLM`，也不希望把 OpenAI 格式中转伪装成 Gemini/AiHubMix 配置。
+  - GitHub Actions 入口此前只注入 `GEMINI_*` 与 `GLM_*` secrets，无法用独立的 OpenAI-compatible 配置表达中转地址、密钥和模型。
+- 根因判断：
+  - 现有 GLM 兼容层本质已经把 `google.genai` 调用转换成 OpenAI Chat Completions 请求，但配置字段和日志仍绑定在 GLM 语义上。
+  - OpenAI-compatible 中转需要独立 provider，避免用户误配到 Gemini 兼容路径。
+- 改动文件：
+  - `app/settings.py`
+  - `app/extensions/llm_adapter.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `docker/docker-compose.yaml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `LLM_PROVIDER=openai`，读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`。
+  - 将原 GLM 请求桥接抽成通用 OpenAI-compatible 客户端，GLM 继续沿用原字段，OpenAI-compatible 中转使用独立字段。
+  - GitHub Actions 入口新增 `OPENAI_*` secrets 注入，Docker 示例改为默认展示 OpenAI-compatible 配置。
+  - 未改变 Epic 登录、领取、结账状态机逻辑。
