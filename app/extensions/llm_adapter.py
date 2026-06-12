@@ -36,6 +36,15 @@ CHALLENGE_PROMPT_ALIASES = (
     "requester_question",
 )
 
+CHALLENGE_TYPE_FIELD_ALIASES = (
+    "challenge_type",
+    "request_type",
+    "task_type",
+    "type",
+    "classification",
+    "challengeType",
+)
+
 POINTS_ALIASES = ("points", "point", "coordinates", "Coordinates")
 
 PATHS_ALIASES = ("paths", "path", "coordinates", "Coordinates")
@@ -73,7 +82,7 @@ def _guess_mime_type(file: Any) -> str:
     return guessed or "image/png"
 
 
-def _extract_json_payload(text: str) -> dict[str, Any]:
+def _extract_json_payload(text: str) -> Any:
     stripped = text.strip()
     if stripped.startswith("```"):
         match = re.search(r"```(?:json)?\s*([\s\S]*?)```", stripped)
@@ -184,6 +193,33 @@ def _extract_challenge_type(text: str) -> str | None:
     stripped = CHALLENGE_TYPE_ALIASES.get(stripped, stripped)
     if stripped in KNOWN_CHALLENGE_TYPES:
         return stripped
+    return None
+
+
+def _extract_challenge_type_from_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        return _extract_challenge_type(value)
+
+    if isinstance(value, dict):
+        direct = _payload_value(value, CHALLENGE_TYPE_FIELD_ALIASES)
+        if direct is not None:
+            challenge_type = _extract_challenge_type(str(direct))
+            if challenge_type:
+                return challenge_type
+
+        for key in ("answer", "result", "classification"):
+            if key not in value:
+                continue
+            challenge_type = _extract_challenge_type_from_value(value[key])
+            if challenge_type:
+                return challenge_type
+
+    if isinstance(value, list):
+        for item in value:
+            challenge_type = _extract_challenge_type_from_value(item)
+            if challenge_type:
+                return challenge_type
+
     return None
 
 
@@ -574,6 +610,15 @@ def _build_drag_payload(
 def _normalize_glm_answer_value(
     value: Any, *, challenge_prompt: str = "", inferred_rule: str = ""
 ) -> dict[str, Any] | None:
+    if isinstance(value, list):
+        for item in value:
+            normalized = _normalize_glm_answer_value(
+                item, challenge_prompt=challenge_prompt, inferred_rule=inferred_rule
+            )
+            if normalized:
+                return normalized
+        return None
+
     if isinstance(value, dict):
         return _normalize_glm_payload(
             {
@@ -624,6 +669,17 @@ def _normalize_glm_answer_value(
         )
 
     return None
+
+
+def _normalize_glm_response_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return _normalize_glm_payload(value)
+
+    normalized = _normalize_glm_answer_value(value)
+    if normalized:
+        return normalized
+
+    return {"answer": value}
 
 
 def _schema_field_names(schema: Any) -> set[str]:
@@ -775,8 +831,13 @@ def _coerce_payload_for_schema(payload: dict[str, Any], schema: Any, text: str) 
             payload.get(challenge_type_field)
             or payload.get("challenge_type")
             or payload.get("request_type")
+            or payload.get("task_type")
+            or payload.get("type")
+            or payload.get("classification")
+            or payload.get("challengeType")
             or _extract_challenge_type(text)
-            or _extract_challenge_type(str(payload.get("answer") or ""))
+            or _extract_challenge_type_from_value(payload.get("answer"))
+            or _extract_challenge_type_from_value(payload)
         )
         challenge_type = _coerce_challenge_type_for_schema(
             challenge_type, schema, challenge_type_field
@@ -1017,7 +1078,7 @@ class _OpenAICompatibleAsyncModels:
 
         try:
             payload = _coerce_payload_for_schema(
-                _normalize_glm_payload(_extract_json_payload(text)), schema, text
+                _normalize_glm_response_payload(_extract_json_payload(text)), schema, text
             )
         except Exception:
             normalized = _normalize_glm_answer_value(text)

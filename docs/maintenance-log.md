@@ -712,3 +712,18 @@
   - 保留 `egs-navigation` 作为优先判断。
   - 当领取页无法读取 `egs-navigation` 时，通过当前 Playwright browser context 请求 Epic 订单历史接口；返回订单列表则判定 session 已登录，401/403 或登录页则判定未登录。
   - 将订单历史 URL 抽为常量，避免领取流程中同一端点重复硬编码。
+
+### 2026-06-12 OpenAI-compatible 结构化结果归一化
+
+- 现象：
+  - GitHub Actions 已完成登录并进入两个免费商品的即时结账流程。
+  - 结账 hCaptcha 阶段，OpenAI-compatible 模型多次返回合法 JSON，但字段为 `type`、`task_type`、`classification` 或数组包裹对象，未满足 `ChallengeRouterResult` 的 `challenge_type` / `challenge_prompt` 字段要求。
+- 根因判断：
+  - 适配层只在 JSON 解析失败时才进入答案归一化；当模型返回“合法 JSON 但字段名不匹配”时，会直接进入 Pydantic 校验并失败。
+- 改动文件：
+  - `app/extensions/llm_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 结构化解析入口统一先归一化任意 JSON 值，再按 schema 校验。
+  - 将 `classification`、`challengeType`、`task_type`、`type` 等字段视为 challenge type 候选。
+  - 支持模型把单个结构化对象包在数组中返回。
