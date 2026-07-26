@@ -714,6 +714,70 @@
   - Camoufox 分支改为手动托管 `__aenter__` / `__aexit__`，并在退出时抑制关闭阶段异常，避免驱动已断开时把 run 改写成失败。
   - 这样即使浏览器进程先一步结束，GitHub Actions 也不会因为清理阶段双重关闭而额外翻成 exit code 1。
 
+### 2026-06-12 OpenAI-compatible 中转 provider 支持
+
+- 现象：
+  - 部署方不希望使用智谱 `GLM`，也不希望把 OpenAI 格式中转伪装成 Gemini/AiHubMix 配置。
+  - GitHub Actions 入口此前只注入 `GEMINI_*` 与 `GLM_*` secrets，无法用独立的 OpenAI-compatible 配置表达中转地址、密钥和模型。
+- 根因判断：
+  - 现有 GLM 兼容层本质已经把 `google.genai` 调用转换成 OpenAI Chat Completions 请求，但配置字段和日志仍绑定在 GLM 语义上。
+  - OpenAI-compatible 中转需要独立 provider，避免用户误配到 Gemini 兼容路径。
+- 改动文件：
+  - `app/settings.py`
+  - `app/extensions/llm_adapter.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `docker/docker-compose.yaml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `LLM_PROVIDER=openai`，读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`。
+  - 将原 GLM 请求桥接抽成通用 OpenAI-compatible 客户端，GLM 继续沿用原字段，OpenAI-compatible 中转使用独立字段。
+  - GitHub Actions 入口新增 `OPENAI_*` secrets 注入，Docker 示例改为默认展示 OpenAI-compatible 配置。
+  - 未改变 Epic 登录、领取、结账状态机逻辑。
+
+### 2026-06-12 领取流程登录态判定兜底
+
+- 现象：
+  - GitHub Actions 使用 OpenAI-compatible 中转完成登录 hCaptcha、账号校验与商店 session 校验后，进入领取流程。
+  - 领取页 `https://store.epicgames.com/free-games?lang=en-US` 长时间未出现 `//egs-navigation`，导致流程无法判断登录态并退出。
+- 根因判断：
+  - 领取流程只依赖页面自定义元素 `egs-navigation[isloggedin]` 判断登录态；当 Epic 商店页结构或加载顺序变化时，已验证的 session 会被误判成不可判定。
+  - 后续订单历史同步本身依赖 Epic account 订单接口，因此该接口更适合做 cookie/session 的运行态兜底探测。
+- 改动文件：
+  - `app/services/epic_games_service.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 保留 `egs-navigation` 作为优先判断。
+  - 当领取页无法读取 `egs-navigation` 时，通过当前 Playwright browser context 请求 Epic 订单历史接口；返回订单列表则判定 session 已登录，401/403 或登录页则判定未登录。
+  - 将订单历史 URL 抽为常量，避免领取流程中同一端点重复硬编码。
+
+### 2026-06-12 OpenAI-compatible 结构化结果归一化
+
+- 现象：
+  - GitHub Actions 已完成登录并进入两个免费商品的即时结账流程。
+  - 结账 hCaptcha 阶段，OpenAI-compatible 模型多次返回合法 JSON，但字段为 `type`、`task_type`、`classification` 或数组包裹对象，未满足 `ChallengeRouterResult` 的 `challenge_type` / `challenge_prompt` 字段要求。
+- 根因判断：
+  - 适配层只在 JSON 解析失败时才进入答案归一化；当模型返回“合法 JSON 但字段名不匹配”时，会直接进入 Pydantic 校验并失败。
+- 改动文件：
+  - `app/extensions/llm_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 结构化解析入口统一先归一化任意 JSON 值，再按 schema 校验。
+  - 将 `classification`、`challengeType`、`task_type`、`type` 等字段视为 challenge type 候选。
+  - 支持模型把单个结构化对象包在数组中返回。
+  - 将 `moves` / `move` 视为拖拽路径字段别名，兼容模型返回 `{moves: [{start, end}]}` 的形状。
+  - 为 OpenAI-compatible 请求按 `response_schema` 追加精确输出约束，避免题型路由返回坐标、拖拽解题返回单点或 bbox。
+
+### 2026-06-12 GitHub Actions 每三天巡检
+
+- 现象：
+  - 用户希望不只等每周四周免刷新，也能覆盖 Epic 临时免费活动。
+- 改动文件：
+  - `.github/workflows/epic-gamer.yml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - GitHub Actions cron 从每周四 UTC 15:20 改为每 3 天 UTC 15:20。
+  - 北京时间对应为运行日 23:20。
+
 ### 2026-06-16 Epic Store 导航组件缺失导致 Actions 登录态误判
 
 - 现象：
