@@ -1,10 +1,9 @@
-name: Epic Awesome Gamer (Scheduled)
+name: Epic Freebies Helper (Scheduled)
 
 on:
   workflow_dispatch: # 手动触发
   schedule:
-    # 每 3 天 UTC 15:20 运行一次（北京时间 23:20）
-    # 提高巡检频率，覆盖 Epic 临时免费活动。
+    # 每 3 天 UTC 15:20（UTC+8 23:20）运行一次。
     - cron: '20 15 */3 * *'
 
 env:
@@ -15,9 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     
-    # 默认不在主仓库自身执行定时任务；Fork 后的仓库会正常运行。
-    if: github.repository != 'Ronchy2000/epic-freebies-helper'
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -53,20 +49,10 @@ jobs:
         env:
           EPIC_EMAIL: ${{ secrets.EPIC_EMAIL }}
           EPIC_PASSWORD: ${{ secrets.EPIC_PASSWORD }}
-          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_BASE_URL: ${{ secrets.GEMINI_BASE_URL }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
-          GLM_BASE_URL: ${{ secrets.GLM_BASE_URL }}
-          GLM_MODEL: ${{ secrets.GLM_MODEL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-          CHALLENGE_CLASSIFIER_MODEL: ${{ secrets.CHALLENGE_CLASSIFIER_MODEL }}
-          IMAGE_CLASSIFIER_MODEL: ${{ secrets.IMAGE_CLASSIFIER_MODEL }}
-          SPATIAL_POINT_REASONER_MODEL: ${{ secrets.SPATIAL_POINT_REASONER_MODEL }}
-          SPATIAL_PATH_REASONER_MODEL: ${{ secrets.SPATIAL_PATH_REASONER_MODEL }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || secrets.LLM_PROVIDER }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || secrets.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || secrets.LLM_MODEL }}
           BROWSER_BACKEND: auto
           DISABLE_BEZIER_TRAJECTORY: false
           # 在 Actions 中我们依靠 GitHub 的 cron 触发，所以关闭内部调度器
@@ -75,7 +61,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PYTHONPATH: app
         run: |
-          echo "🚀 启动定时领取任务（支持 Gemini/AiHubMix/GLM/OpenAI-compatible）..."
+          echo "🚀 启动定时领取任务（LLM_PROVIDER=${LLM_PROVIDER:-openai}）..."
           xvfb-run --auto-servernum --server-num=1 --server-args='-screen 0, 1920x1080x24' uv run app/deploy.py
 
       - name: Write success summary
@@ -86,7 +72,6 @@ jobs:
             echo
             echo "The workflow completed successfully."
             echo
-            echo "- Share successful runs here: [Share your successful runs here / 成功领取的来这里留言！ #3](https://github.com/Ronchy2000/epic-freebies-helper/discussions/3)"
             echo "- If the game was already in your library, Epic may not send a separate confirmation email. Review the logs and artifacts when verification is needed."
             echo "- If you later report an issue from a private fork, upload the artifact zip files because maintainers cannot access private Actions pages."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -96,7 +81,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: epic-runtime-${{ github.run_id }}
-          path: app/volumes/runtime/
+          path: |
+            app/volumes/runtime/
+            app/volumes/hcaptcha/.challenge/
+          include-hidden-files: true
           retention-days: 7
 
       - name: Upload log artifacts

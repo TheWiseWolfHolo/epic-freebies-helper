@@ -54,6 +54,10 @@ def generate_env_example(config_class: Type[BaseSettings]) -> List[str]:
 
     # Process fields in the original order
     for field_name in field_order:
+        model_field = config_class.model_fields.get(field_name)
+        if model_field is not None and model_field.exclude:
+            continue
+
         # Skip non-environment variables (typically lowercase or Path objects)
         # In environment variables, we typically want uppercase variables only
         if not field_name.isupper():

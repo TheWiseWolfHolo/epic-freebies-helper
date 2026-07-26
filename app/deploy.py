@@ -87,9 +87,6 @@ async def execute_browser_tasks(headless: bool = True):
             for p in browser.pages:
                 await p.close()
 
-        with suppress(Exception):
-            await browser.close()
-
         logger.debug("Browser tasks execution finished successfully")
 
 
@@ -107,6 +104,15 @@ async def deploy():
     sj["headless"] = headless
     logger.debug(
         f"Starting deployment with configuration: {json.dumps(sj, indent=2, ensure_ascii=False)}"
+    )
+    logger.info(
+        "Effective LLM model routing | provider={} | challenge_classifier={} | "
+        "image_classifier={} | spatial_point_reasoner={} | spatial_path_reasoner={}",
+        settings.LLM_PROVIDER,
+        settings.CHALLENGE_CLASSIFIER_MODEL,
+        settings.IMAGE_CLASSIFIER_MODEL,
+        settings.SPATIAL_POINT_REASONER_MODEL,
+        settings.SPATIAL_PATH_REASONER_MODEL,
     )
 
     if configuration_error := settings.llm_configuration_error:

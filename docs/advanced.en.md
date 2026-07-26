@@ -1,248 +1,126 @@
-# Advanced Developer Guide
+# Advanced configuration and troubleshooting
 
-This document is for readers who want to keep changing the project, open PRs, or build on top of it.
+## Configuration model
 
-Language versions:
+The project exposes one provider-neutral LLM configuration:
 
-- [简体中文](advanced.md)
-- English (this page)
-
-If you only want to configure and use the project, start with:
-
-- [README](../README.en.md)
-- [Development Log (2026-04-22)](development-log-2026-04-22.en.md)
-- [GitHub Actions Guide](../.github/workflows/README.en.md)
-
----
-
-## Project Structure
-
-| File | Purpose |
-| --- | --- |
-| [`app/deploy.py`](../app/deploy.py) | Main runtime entry, responsible for browser startup, login, claiming, and scheduling |
-| [`app/services/epic_authorization_service.py`](../app/services/epic_authorization_service.py) | Login, login-result listeners, and post-login validation |
-| [`app/services/epic_games_service.py`](../app/services/epic_games_service.py) | Weekly freebie discovery, product-page entry, add-to-cart, checkout, and checkout verification handling |
-| [`app/settings.py`](../app/settings.py) | Environment variables, model routing, and defaults |
-| [`app/extensions/llm_adapter.py`](../app/extensions/llm_adapter.py) | Gemini / AiHubMix / GLM compatibility adapter |
-| [`.github/workflows/epic-gamer.yml`](../.github/workflows/epic-gamer.yml) | GitHub Actions workflow entry |
-
----
-
-## Local Development
-
-```bash
-uv sync
-uv run black . -C -l 100
-uv run ruff check --fix
+```dotenv
+LLM_PROVIDER=openai
+LLM_API_KEY=sk-...
+LLM_BASE_URL=https://your-provider.example/v1
+LLM_MODEL=your-vision-model
 ```
 
-Notes:
+`LLM_PROVIDER` selects the wire protocol. The API key, Base URL, and model must
+all belong to the same service.
 
-1. This repository currently does not recommend adding extra test runs.
-2. When changing the captcha chain, preserve logs and screenshots first.
-3. When changing the checkout flow, prioritize "do not report success unless success is actually confirmed."
+## Protocol requests
 
----
+### `openai`
 
-## Real Pitfalls Encountered During This Adaptation
+- Request: `POST {base}/chat/completions`
+- Images: OpenAI Chat Completions `image_url` data URIs
+- Structured output: JSON Object plus the response schema in the prompt
 
-These are not hypothetical issues. They all happened during real development and were explicitly fixed.
+### `openai-responses`
 
-### 1. GLM is not a simple Base URL replacement
+- Request: `POST {base}/responses`
+- Images: Responses API `input_image` data URIs
+- Structured output: `text.format` JSON Schema
 
-`hcaptcha-challenger` internally depends on a `google-genai`-style multimodal interface.
+### `gemini`
 
-That means you cannot support GLM by only changing `GEMINI_BASE_URL` to Zhipu's endpoint.
+- Request: `POST {base}/models/{model}:generateContent`
+- Images: native Gemini `inlineData`
+- Structured output: `responseMimeType=application/json` and
+  `responseJsonSchema`
+- API key: `x-goog-api-key` header
 
-The actual work is to preserve the upper-layer call pattern while converting images, messages, and structured outputs into a format GLM accepts in the adapter layer.
+### `claude`
 
----
+- Request: `POST {base}/messages`
+- Images: native Claude base64 image blocks
+- Structured output: `output_config.format` JSON Schema
+- API key: `x-api-key` header
 
-### 2. Challenge types really do change across phases
+All adapters share retry handling, HTTP error reporting, JSON extraction,
+Pydantic schema validation, and response caching.
 
-The challenge type during login is not guaranteed to match the challenge type during checkout.
+## Base URL normalization
 
-| Phase | Challenge type |
-| --- | --- |
-| Login | `image_drag_single` |
-| Checkout | `image_label_multi_select` |
+The app normalizes `LLM_BASE_URL` to an API root before adding the protocol
+endpoint:
 
-If the adapter only handles drag challenges, the flow can still die on the second verification step at checkout.
+1. Remove a trailing slash.
+2. Reject non-HTTP(S) URLs, query strings, and fragments.
+3. When no version segment exists:
+   - append `/v1` for `openai`, `openai-responses`, and `claude`
+   - append `/v1beta` for `gemini`
+4. Preserve an existing version segment.
+5. Append the selected protocol endpoint.
 
----
+As a result, `https://host.example/v1` stays unchanged and
+`https://host.example` becomes `https://host.example/v1`; `/v1/v1` is not
+produced. Gemini uses `/v1beta`, so do not apply the OpenAI `/v1` convention to
+it manually.
 
-### 3. GLM output format is not stable
+Full endpoints are recognized, but entering the API root is recommended. It
+makes protocol mismatches visible when changing `LLM_PROVIDER`.
 
-The following response forms were seen in real runs:
+## GitHub Actions variables
 
-| Response form | Meaning |
-| --- | --- |
-| `Source Position: (...)` | Coordinate text |
-| `{"source": [...], "target": [...]}` | Structured drag coordinates |
-| `{"answer":"..."}` | A string wrapped inside `answer` |
-| `image_label_multi_select` | Only the challenge type name |
-| Semi-structured JSON | Incomplete or malformed responses |
+Recommended storage:
 
-That is why [`llm_adapter.py`](../app/extensions/llm_adapter.py) now contains a lot of fallback logic that unwraps content and remaps it into the schema expected by the challenger.
+- Secrets: `EPIC_EMAIL`, `EPIC_PASSWORD`, `LLM_API_KEY`
+- Variables: `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL`
 
----
+The last three may also be same-named Secrets for migration compatibility.
+Variables take precedence.
 
-### 3.1 Which captcha types are actually considered right now
+Legacy variables are not read:
 
-At the adapter layer, the project currently has explicit handling for these challenge types:
+- `OPENAI_*`
+- `GEMINI_*`
+- `GLM_*`
+- the four per-task hCaptcha model overrides
 
-| Type | Current status | Common phase |
-| --- | --- | --- |
-| `image_drag_single` | Supported, but still occasionally unstable | Login |
-| `image_drag_multiple` / `image_drag_multi` | Supported, but only moderately stable | Login / checkout |
-| `image_label_binary` | Supported | Login |
-| `image_label_multi_select` | Supported, but most sensitive to model-output shape drift | Checkout |
-| `image_label_area_select` | Supported, but sensitive to box-coordinate response formats | Checkout |
-| `image_label_multiple_choice` | Wired in, but real-world samples are still limited | Login / checkout |
+Every hCaptcha reasoner uses `LLM_MODEL`, preventing one challenge from silently
+crossing protocols or models.
 
-There is also one challenge prompt that is explicitly treated as out of scope for reliable support:
+## Common failures
 
-| Special prompt | Current strategy |
-| --- | --- |
-| `Please drag the crossing to complete the lines` | Explicitly ignored, not treated as a stable supported case |
+### `Invalid LLM configuration: LLM_API_KEY is empty`
 
-So the real state of the project is not "all captcha types are solved reliably." The actual state is "common types are handled as far as practical, while special prompts and heavily drifting response shapes are still repaired case by case from artifacts."
+The current environment does not provide `LLM_API_KEY`. Store it as a GitHub
+Actions Secret.
 
-### 3.2 Why some captcha challenges still fail
+### `Invalid LLM configuration: LLM_MODEL is empty`
 
-Based on the cases already fixed, failures usually come from a combination of these factors rather than one single bug:
+No model was selected. It must support image input.
 
-| Failure source | Typical manifestation |
-| --- | --- |
-| Unstable challenge routing | The router returns only a type name, or uses an alias instead of the canonical type |
-| Model-output shape drift | Only `answer` is returned, only a raw string is returned, required fields are missing, or coordinate formats change |
-| Checkout verification is harder than login | Passing login does not mean the second verification during checkout will also pass |
-| Page state changes too quickly | The challenge frame disappears, buttons change briefly, or Playwright misses the short observation window |
-| Epic / hCaptcha risk-control changes | The same account and same challenge type can behave differently at different times |
+### HTTP 404
 
-That is why the real engineering goal here is not a literal 100% captcha pass rate. The more realistic goal is:
+Check that:
 
-1. Cover the common challenge types as well as possible.
-2. Fix response-shape drift in [`llm_adapter.py`](../app/extensions/llm_adapter.py) first.
-3. Fix page-state recognition in [`epic_games_service.py`](../app/services/epic_games_service.py) when the page flow changes.
-4. Leave enough artifacts on every failure to support the next repair.
+- `LLM_PROVIDER` matches the protocol implemented by the service
+- `LLM_BASE_URL` is an API address, not a dashboard address
+- the service does not require an additional fixed path prefix
+- a full endpoint was not paired with another protocol
 
----
+### HTTP 401 / 403
 
-### 4. Epic checkout can show more than hCaptcha
+Verify that the key belongs to the selected service, has access to the model,
+and uses the authentication headers expected by that protocol.
 
-The following states were all confirmed during checkout:
+### Schema validation failure
 
-| Scenario | Seen in real runs |
-| --- | --- |
-| `Device not supported` | Yes |
-| `One more step` | Yes |
-| An extra checkout iframe | Yes |
-| The page still sitting on `Place Order` | Yes |
+The service may be ignoring structured-output controls, or the model may not be
+reliable for image-to-JSON work. The app surfaces this error. Inspect the logs
+and cached hCaptcha response for the original output.
 
-Because of that, [`epic_games_service.py`](../app/services/epic_games_service.py) now does all of the following:
+## Implementation boundary
 
-1. Detects and tries to dismiss the device-not-supported dialog.
-2. Detects checkout security checks explicitly.
-3. Loops after `Place Order` to observe the actual result instead of assuming success.
-4. Refuses to report success until success is confirmed.
-
----
-
-### 5. Ownership detection cannot scan the whole page loosely
-
-At one point, copyright text like `owned by ...` was incorrectly interpreted as "already owned."
-
-The fix was:
-
-1. Look at the purchase button and checkout state first.
-2. Only accept high-confidence success markers.
-
----
-
-### 6. Artifacts are critical
-
-Checkout problems were not diagnosed from console output alone. These files were essential:
-
-| File | Why it matters |
-| --- | --- |
-| Log files extracted from `epic-logs-<run_id>` | Shows the full execution chain |
-| `purchase_debug/*.png` extracted from `epic-runtime-<run_id>` | If present, shows the actual product-page or checkout rendering |
-| `purchase_debug/*.txt` extracted from `epic-runtime-<run_id>` | If present, shows product-page text and iframe text |
-| Screenshots extracted from `epic-screenshots-<run_id>` | If present, shows login, risk-control, or auth page state |
-
-`epic-runtime` and `epic-screenshots` do not always appear together. The workflow attempts to upload them, but GitHub only shows artifacts that actually contain files. A run that never reaches product pages may have no `runtime` artifact; a run that never saves login/risk-control screenshots may have no `screenshots` artifact.
-
----
-
-## Robustness Plan After the 2026-04-24 User Reports
-
-This round came from multiple real user artifact bundles, not from a single isolated failure. When analyzing these reports, do not only read the final traceback. Check all of the following:
-
-1. The last business action in `runtime.log`.
-2. The Playwright / hCaptcha exception type in `error.log`.
-3. Whether `purchase_debug/*.png` already shows a button, iframe, dialog, or success confirmation.
-4. Main-page text and frame text in `purchase_debug/*.txt`.
-
-### Failure Classes
-
-| Symptom | Log signature | Technical read | Direction |
-| --- | --- | --- | --- |
-| Repeated login failure | `Timed out waiting for Epic login outcome`, `btoa is read-only`, `Challenge execution timed out` | hCaptcha is still visible, or the page is polluted by a previous solve attempt | Retry login challenge in smaller phases; rebuild the page and clear cookies after a failed login attempt |
-| Product page navigation failure | `Page.goto: Timeout 30000ms exceeded` | The usable page body may already be present, while `load` is blocked by images, scripts, or third-party resources | Use `domcontentloaded`; continue when a partially loaded page is usable |
-| Visible `Get` button click hangs | `Locator.click: Timeout 10000ms exceeded`, while the screenshot shows the button | Playwright is waiting for the click action to finish, but the page does not return in the expected way | Layer standard click, dispatch, DOM click, coordinate click, and force click |
-| Checkout progressed but is unconfirmed | The page remains on `Place Order` or a security check | A successful click is not the same as a successful claim | Continue observing order confirmation, button state, checkout iframe, and order history |
-| Config contains trailing whitespace | Model names in logs look like `glm-4.6v\n` | GitHub Secrets or copied values can contain whitespace | Strip string settings centrally |
-
-### Current Design Principles
-
-1. **Do not treat a single Playwright timeout as business failure**  
-   In browser automation, `click()` can time out because an action wait condition was not satisfied. If the page already shows a checkout iframe, security check, success text, or button-state change, the flow should continue observing the next stage instead of throwing immediately.
-
-2. **Retry by stage, not by whole workflow**  
-   Login, product-page entry, purchase-button click, checkout submission, hCaptcha solving, and final confirmation are separate failure points. When one stage fails, reset only the state needed for that stage.
-
-3. **Success must be high-confidence**  
-   A returned click, redirect, or loose page-text match is not enough. Success signals should be prioritized roughly as follows:
-
-   | Priority | Signal |
-   | --- | --- |
-   | High | `Thanks for your order` + `Order number` |
-   | High | Matching namespace / offerId appears in order history |
-   | Medium | Button changes to `In Library` / `Owned` / `View in Library` |
-   | Low | Loose body-text markers |
-
-4. **Failures must leave artifacts**  
-   Navigation failure, missing button, ineffective click, and unconfirmed checkout should save screenshots and text. Future fixes should be based on artifact classes instead of guessing more selectors.
-
-### Implementation Points
-
-| File | Plan |
-| --- | --- |
-| [`app/services/epic_authorization_service.py`](../app/services/epic_authorization_service.py) | Detect visible hCaptcha during login; if login-outcome wait times out while captcha remains, retry solving; rebuild the page and clear cookies after a failed login attempt |
-| [`app/services/epic_games_service.py`](../app/services/epic_games_service.py) | Make product-page navigation recoverable; use layered purchase-button click strategies; decide progress by page state after clicking |
-| [`app/settings.py`](../app/settings.py) | Strip string settings such as model names, base URLs, provider, and account email |
-
-### Future Triage Workflow
-
-For similar reports, use this order:
-
-1. Classify the failure as login, product page, button click, checkout, security check, or final confirmation.
-2. Inspect `purchase_debug` screenshots to understand the real page state instead of trusting the traceback alone.
-3. If the page already advanced to the next stage, improve state detection and confirmation logic before adding longer timeouts.
-4. If Epic introduces new copy or a new dialog, add high-precision text handling first, then add a screenshot capture point.
-5. If model output shape changes, normalize it in [`llm_adapter.py`](../app/extensions/llm_adapter.py) instead of spreading provider-specific behavior into the business flow.
-
-This project cannot honestly guarantee a literal 100% success rate because Epic risk controls, shared cloud IPs, captcha types, and third-party model responses are outside the codebase's control. The engineering target is recoverability, observability, no false success reports, and enough evidence on every failure to support the next fix.
-
----
-
-## Maintenance Priorities
-
-If you continue maintaining this project, keep watching these classes of change first:
-
-1. Whether Epic changes the captcha type on the login page.
-2. Whether product-page button labels change.
-3. Whether checkout iframe behavior or `Place Order` behavior changes.
-4. Whether GLM / Gemini response formats change again.
-5. Whether the GitHub Actions runtime environment changes.
+`app/llm/provider.py` owns protocol serialization and parsing,
+`app/llm/urls.py` owns URLs, and `app/llm/agent.py` is the only injection point
+for the private `hcaptcha-challenger` reasoners. If a dependency update breaks
+that seam, repair this file instead of introducing another global monkey patch.

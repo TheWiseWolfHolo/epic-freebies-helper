@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import AsyncIterator
 
 from loguru import logger
@@ -72,9 +72,14 @@ async def open_browser_context(headless: bool | str) -> AsyncIterator[BrowserCon
         try:
             from camoufox import AsyncCamoufox
 
-            async with AsyncCamoufox(**_camoufox_launch_options(headless)) as browser:
+            camoufox = AsyncCamoufox(**_camoufox_launch_options(headless))
+            browser = await camoufox.__aenter__()
+            try:
                 yield browser
                 return
+            finally:
+                with suppress(Exception):
+                    await camoufox.__aexit__(None, None, None)
         except Exception as err:
             if backend == "camoufox" or not _is_camoufox_bootstrap_error(err):
                 raise
