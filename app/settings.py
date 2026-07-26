@@ -9,7 +9,7 @@ from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from extensions.hcaptcha_adapter import apply_hcaptcha_drag_patch
-from extensions.llm_adapter import apply_llm_patch
+from llm.urls import LLMProvider, normalize_base_url
 
 # --- 核心路径定义 ---
 PROJECT_ROOT = Path(__file__).parent
@@ -43,24 +43,22 @@ def _coerce_secret_input(value: object) -> str | None:
 class EpicSettings(AgentConfig):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True, extra="ignore")
 
-    GEMINI_API_KEY: SecretStr | None = Field(default=None, description="Gemini/AiHubMix API key")
-
-    GEMINI_BASE_URL: str = Field(
-        default="", description="Optional Gemini-compatible base URL override"
+    # hcaptcha-challenger still constructs its default Gemini provider before our
+    # provider-neutral adapter is injected. Keep the required inherited field
+    # internal and exclude it from dumps; no request uses this sentinel.
+    GEMINI_API_KEY: SecretStr = Field(
+        default=SecretStr("__provider_managed__"),
+        exclude=True,
+        repr=False,
+        description="Internal compatibility sentinel",
     )
-
-    GEMINI_MODEL: str = Field(default="gemini-2.5-pro", description="Gemini default model")
-
-    LLM_PROVIDER: str = Field(default="", description="Supported values: gemini, glm")
-
-    GLM_API_KEY: SecretStr | None = Field(default=None, description="GLM API key")
-
-    GLM_BASE_URL: str = Field(
-        default="https://open.bigmodel.cn/api/paas/v4", description="GLM OpenAI-compatible base URL"
+    LLM_PROVIDER: str = Field(
+        default=LLMProvider.OPENAI.value,
+        description="Supported values: openai, openai-responses, gemini, claude",
     )
-
-    GLM_MODEL: str = Field(default="glm-4.6v", description="GLM vision-capable default model")
-    GLM_REQUEST_TIMEOUT_SECONDS: float = Field(default=50.0, gt=5.0, le=120.0)
+    LLM_API_KEY: SecretStr | None = Field(default=None, description="LLM API key")
+    LLM_BASE_URL: str = Field(default="", description="Optional provider API root override")
+    LLM_MODEL: str = Field(default="", description="Vision-capable model name")
 
     BROWSER_BACKEND: str = Field(
         default="auto", description="Supported values: auto, camoufox, playwright"
@@ -71,10 +69,10 @@ class EpicSettings(AgentConfig):
     DISABLE_BEZIER_TRAJECTORY: bool = Field(default=False)
     WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS: int = Field(default=3000)
 
-    CHALLENGE_CLASSIFIER_MODEL: str = Field(default="")
-    IMAGE_CLASSIFIER_MODEL: str = Field(default="")
-    SPATIAL_POINT_REASONER_MODEL: str = Field(default="")
-    SPATIAL_PATH_REASONER_MODEL: str = Field(default="")
+    CHALLENGE_CLASSIFIER_MODEL: str = Field(default="", exclude=True)
+    IMAGE_CLASSIFIER_MODEL: str = Field(default="", exclude=True)
+    SPATIAL_POINT_REASONER_MODEL: str = Field(default="", exclude=True)
+    SPATIAL_PATH_REASONER_MODEL: str = Field(default="", exclude=True)
 
     cache_dir: Path = HCAPTCHA_DIR.joinpath(".cache")
     challenge_dir: Path = HCAPTCHA_DIR.joinpath(".challenge")
@@ -90,31 +88,25 @@ class EpicSettings(AgentConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _bridge_provider_credentials(cls, raw_data):
+    def _prepare_provider_settings(cls, raw_data):
         data = dict(raw_data) if isinstance(raw_data, dict) else {}
+        provider = str(data.get("LLM_PROVIDER") or LLMProvider.OPENAI.value).strip().lower()
+        data["LLM_PROVIDER"] = provider
 
-        provider = str(data.get("LLM_PROVIDER") or "").strip().lower()
-        glm_key = _coerce_secret_input(data.get("GLM_API_KEY"))
-        gemini_key = _coerce_secret_input(data.get("GEMINI_API_KEY"))
-
-        if provider not in {"gemini", "glm"}:
-            data["LLM_PROVIDER"] = "glm" if glm_key else "gemini"
-
-        # `hcaptcha-challenger` still expects GEMINI_API_KEY in its base settings model.
-        # Seed it before field validation so GLM-only environments work in local runs and CI.
-        if gemini_key is None and glm_key is not None:
-            data["GEMINI_API_KEY"] = glm_key
+        # AgentConfig currently validates a Gemini-named field before AgentV lets us inject
+        # its provider-neutral ChatProvider. Keep this dependency shim internal; requests
+        # use only LLM_API_KEY through app.llm.
+        llm_key = _coerce_secret_input(data.get("LLM_API_KEY"))
+        data["GEMINI_API_KEY"] = llm_key or "__provider_managed__"
 
         return data
 
     @model_validator(mode="after")
     def _apply_runtime_defaults(self):
         for field_name in (
-            "GEMINI_BASE_URL",
-            "GEMINI_MODEL",
             "LLM_PROVIDER",
-            "GLM_BASE_URL",
-            "GLM_MODEL",
+            "LLM_BASE_URL",
+            "LLM_MODEL",
             "BROWSER_BACKEND",
             "EPIC_EMAIL",
             "CHALLENGE_CLASSIFIER_MODEL",
@@ -126,23 +118,18 @@ class EpicSettings(AgentConfig):
             if isinstance(value, str):
                 setattr(self, field_name, value.strip())
 
-        provider = (self.LLM_PROVIDER or "").strip().lower()
-        if provider not in {"gemini", "glm"}:
-            provider = "glm" if self.GLM_API_KEY else "gemini"
-        self.LLM_PROVIDER = provider
+        provider = LLMProvider((self.LLM_PROVIDER or "").strip().lower())
+        self.LLM_PROVIDER = provider.value
+        if self.LLM_BASE_URL:
+            self.LLM_BASE_URL = normalize_base_url(provider, self.LLM_BASE_URL)
 
-        if self.GEMINI_API_KEY is None and self.GLM_API_KEY is not None:
-            self.GEMINI_API_KEY = self.GLM_API_KEY
-
-        provider_default = self.GLM_MODEL if provider == "glm" else self.GEMINI_MODEL
-        if not self.CHALLENGE_CLASSIFIER_MODEL:
-            self.CHALLENGE_CLASSIFIER_MODEL = provider_default
-        if not self.IMAGE_CLASSIFIER_MODEL:
-            self.IMAGE_CLASSIFIER_MODEL = provider_default
-        if not self.SPATIAL_POINT_REASONER_MODEL:
-            self.SPATIAL_POINT_REASONER_MODEL = provider_default
-        if not self.SPATIAL_PATH_REASONER_MODEL:
-            self.SPATIAL_PATH_REASONER_MODEL = provider_default
+        for field_name in (
+            "CHALLENGE_CLASSIFIER_MODEL",
+            "IMAGE_CLASSIFIER_MODEL",
+            "SPATIAL_POINT_REASONER_MODEL",
+            "SPATIAL_PATH_REASONER_MODEL",
+        ):
+            setattr(self, field_name, self.LLM_MODEL)
 
         browser_backend = (self.BROWSER_BACKEND or "").strip().lower()
         self.BROWSER_BACKEND = browser_backend or "auto"
@@ -163,26 +150,14 @@ class EpicSettings(AgentConfig):
 
     @property
     def llm_configuration_error(self) -> str | None:
-        provider = (self.LLM_PROVIDER or "").strip().lower()
-
-        if provider == "glm" and self.GLM_API_KEY is None:
-            return (
-                "Invalid LLM configuration: LLM_PROVIDER=glm but GLM_API_KEY is empty. "
-                "Set GLM_API_KEY in GitHub Actions Secrets, or switch LLM_PROVIDER to gemini "
-                "if you intend to use Gemini/AiHubMix."
-            )
-
-        if provider == "gemini" and self.GEMINI_API_KEY is None:
-            return (
-                "Invalid LLM configuration: LLM_PROVIDER=gemini but GEMINI_API_KEY is empty. "
-                "Set GEMINI_API_KEY in GitHub Actions Secrets, or switch LLM_PROVIDER to glm "
-                "if you intend to use GLM."
-            )
+        if self.LLM_API_KEY is None:
+            return "Invalid LLM configuration: LLM_API_KEY is empty."
+        if not self.LLM_MODEL:
+            return "Invalid LLM configuration: LLM_MODEL is empty."
 
         return None
 
 
 settings = EpicSettings()
 settings.ignore_request_questions = ["Please drag the crossing to complete the lines"]
-apply_llm_patch(settings)
 apply_hcaptcha_drag_patch()

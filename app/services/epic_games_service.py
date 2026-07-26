@@ -4,15 +4,16 @@
 # GitHub     : https://github.com/QIN2DIM
 # Description: 游戏商城控制句柄
 
+from __future__ import annotations
+
 import asyncio
 import json
 import time
 from contextlib import suppress
 from json import JSONDecodeError
-from typing import List
+from typing import TYPE_CHECKING, List
 
 import httpx
-from hcaptcha_challenger.agent import AgentV
 from loguru import logger
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Frame, Page
@@ -22,8 +23,12 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
 from models import OrderItem, Order
 from models import PromotionGame
+from llm.agent import create_hcaptcha_agent
 from services.epic_authorization_service import EpicManualActionRequiredError
 from settings import settings, RUNTIME_DIR
+
+if TYPE_CHECKING:
+    from hcaptcha_challenger.agent import AgentV
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 URL_LOGIN = (
@@ -1495,7 +1500,7 @@ class EpicGames:
     ) -> bool:
         url = promotion.url
         logger.info("🚀 Triggering Instant Checkout Flow...")
-        agent = AgentV(page=page, agent_config=settings)
+        agent = create_hcaptcha_agent(page=page, settings=settings)
 
         try:
             state, payload = await self._wait_for_purchase_state(page, url, timeout_ms=25000)
@@ -1769,7 +1774,7 @@ class EpicGames:
         logger.debug("Move ALL paid games from the shopping cart out")
         await self._empty_cart(self.page)
 
-        agent = AgentV(page=self.page, agent_config=settings)
+        agent = create_hcaptcha_agent(page=self.page, settings=settings)
         await self.page.click("//button//span[text()='Check Out']")
         await self._agree_license(self.page)
 

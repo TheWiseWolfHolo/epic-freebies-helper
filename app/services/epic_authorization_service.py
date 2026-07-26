@@ -13,12 +13,12 @@ from contextlib import suppress
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-from hcaptcha_challenger.agent import AgentV
 from loguru import logger
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import expect, Page, Response
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from llm.agent import create_hcaptcha_agent
 from settings import SCREENSHOTS_DIR, settings
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
@@ -493,7 +493,7 @@ class EpicAuthorization:
 
     async def _login(self) -> bool | None:
         # 尽可能早地初始化机器人
-        agent = AgentV(page=self.page, agent_config=settings)
+        agent = create_hcaptcha_agent(page=self.page, settings=settings)
 
         # {{< SIGN IN PAGE >}}
         logger.debug("Login with Email")

@@ -937,3 +937,56 @@
   - Fork 运行 `29563199230` 使用相同编号模板和中点规则完成登录及两款游戏领取，运行 `29563952219` 再次完成登录并从订单历史确认两款均已领取。
   - 基于最新上游的 Fork 运行 `29622500920` 完成登录、商店会话验证和订单历史核对；该轮没有下发编号线段题，因此只作为集成无回归证据，不替代上述题图回放。
   - 按仓库规则未执行测试；使用 Black、Ruff、`py_compile`、真实挑战图离线回放和 `git diff --check` 验证。
+
+### 2026-07-26 LLM 配置绑定厂商与全局 Gemini SDK 补丁
+
+- 现象：
+  - 配置同时暴露 `GLM_*`、`GEMINI_*`、`OPENAI_*` 和多个验证码子模型变量，默认值还指向特定厂商或中转服务。
+  - Gemini、GLM 和 OpenAI 兼容路径通过大型全局 monkey patch 复用 Gemini SDK，请求协议、Base URL 与实际 endpoint 的边界不清楚。
+  - README、Actions 与 Docker 示例包含特定服务推荐、邀请链接和项目无关的推广内容；用户使用自定义 OpenAI `/v1` 地址时难以判断是否还要拼接接口路径。
+- 根因判断：
+  - 配置以厂商品牌而不是线上请求协议建模，导致兼容服务、官方接口和中转地址被混成同一个概念。
+  - `hcaptcha-challenger` 已有 provider-neutral reasoner 接口，但项目没有在单一集成点注入自己的 provider，而是修改第三方 SDK 的全局行为。
+  - 用户入口没有共享统一的变量 contract，历史兼容项不断叠加。
+- 改动文件：
+  - `app/llm/__init__.py`
+  - `app/llm/urls.py`
+  - `app/llm/provider.py`
+  - `app/llm/agent.py`
+  - `app/settings.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `app/extensions/llm_adapter.py`（删除）
+  - `.github/workflows/epic-gamer.yml`
+  - `.github/workflows/README.md`
+  - `.github/workflows/README.en.md`
+  - `.env.example`
+  - `docker/.env`（停止跟踪）
+  - `docker/.env.example`
+  - `docker/docker-compose.yaml`
+  - `README.md`
+  - `README.en.md`
+  - `docs/advanced.md`
+  - `docs/advanced.en.md`
+  - `docs/development-log-2026-04-22.md`（删除）
+  - `docs/development-log-2026-04-22.en.md`（删除）
+  - `docs/adr/0001-native-llm-protocol-adapters.md`
+  - `CONTEXT.md`
+  - `pyproject.toml`
+  - `AGENTS.md`
+  - `CLAUDE.md`
+  - `scripts/generate_commit_message.py`（删除）
+  - `codex-records/epic-awesome-gamer-rollout-2026-04-22.jsonl`（删除）
+  - `docs/images/faq/*` 与 `docs/images/tutorial/*`（删除未引用资源）
+  - `tests/test_glm_adapter.py`（删除）
+  - `tests/test_llm_urls.py`
+  - `tests/test_llm_provider.py`
+  - `tests/env_generator.py`
+- 处理结果：
+  - 对外配置统一为 `LLM_PROVIDER`、`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`；默认协议为 `openai`，支持 `openai`、`openai-responses`、`gemini`、`claude`。
+  - 四种协议使用各自原生 HTTP 请求格式；OpenAI、Responses、Claude 在 Base URL 缺少版本段时补 `/v1`，Gemini 补 `/v1beta`，已有版本段不会重复追加。
+  - 删除全局 Gemini SDK monkey patch，只在 `app/llm/agent.py` 将同一个原生 provider 注入四个 hCaptcha reasoner；第三方依赖的 Gemini 命名兼容字段被限制为内部 sentinel，并从配置输出隐藏。
+  - GitHub Actions 改为每 3 天执行并只读取通用 `LLM_*` 变量；Docker、环境模板、中英文 README 和高级文档同步，移除特定服务推广与默认中转。
+  - Docker Compose 改从被 Git 忽略的 `docker/.env` 读取凭据，仓库只保留无敏感值的 `docker/.env.example`。
+  - 删除约 20 MB 的旧 Codex 会话记录、重复的旧开发日志、未使用的提交信息生成脚本和 README 已不再引用的教程/推广图片。
+  - 增加 URL、endpoint、四协议 payload 和 JSON 提取测试覆盖，但按仓库规则未执行测试；Ruff、相关文件 Black 检查、全部 Python AST 解析、workflow/Compose YAML 解析、`pyproject.toml` 解析与 `git diff --check` 均通过。
