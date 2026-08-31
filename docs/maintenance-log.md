@@ -1054,3 +1054,28 @@
   - Docker Compose 改从被 Git 忽略的 `docker/.env` 读取凭据，仓库只保留无敏感值的 `docker/.env.example`。
   - 删除约 20 MB 的旧 Codex 会话记录、重复的旧开发日志、未使用的提交信息生成脚本和 README 已不再引用的教程/推广图片。
   - 增加 URL、endpoint、四协议 payload 和 JSON 提取测试覆盖，但按仓库规则未执行测试；Ruff、相关文件 Black 检查、全部 Python AST 解析、workflow/Compose YAML 解析、`pyproject.toml` 解析与 `git diff --check` 均通过。
+
+### 2026-09-01 Epic 登录 hCaptcha 抢占、HSW 解码与重试边界
+
+- 现象：
+  - GitHub Actions 运行 `33222228446` 的原始执行与重跑均在认证阶段失败；邮箱和密码已经填入，但每次都等待 `#sign-in` 30 秒后超时，最终耗尽 5 次认证尝试。
+  - 两次运行上传的截图都显示 hCaptcha 已覆盖登录表单，且题型与 Runner 出口 IP 不同，排除了单个题型或单个 Runner 的偶发故障。
+  - 最后一轮还出现 Camoufox/Firefox 读取 `hsw.js` 时的 `NS_ERROR_INVALID_CONTENT_ENCODING`，随后记录 `HSW reverse failed`。
+- 根因判断：
+  - 登录流程把“成功点击 `#sign-in`”作为进入 `wait_for_challenge()` 的前置条件；hCaptcha 在点击前或点击过程中替换按钮时，solver 永远不会启动。
+  - Firefox 对 hCaptcha 压缩后的 `hsw.js` 正文存在解码失败路径，导致确定性 HSW 处理降级。
+  - hcaptcha-challenger 内部递归重试与业务层登录/结账重试叠加；购物车验证码失败后还会递归调用自身，缺少统一信号、超时和次数上限。
+- 改动文件：
+  - `app/extensions/hcaptcha_runtime.py`
+  - `app/services/browser_context.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `app/settings.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 登录提交会识别 hCaptcha 已经出现以及挑战在点击过程中替换按钮两种状态，直接进入求解循环；登录和密码重提的按钮点击使用 `no_wait_after=True`。
+  - 登录与结账统一通过带外层超时和上下文日志的 helper 读取 `ChallengeSignal`，失败信号不再被当成静默成功。
+  - Camoufox 与 Playwright Firefox 只对 `**/hsw.js*` 强制 `Accept-Encoding: identity`，其他浏览器请求保持原样。
+  - `RETRY_ON_FAILURE` 默认关闭，由业务层持有明确的重试上限；购物车购买从无界递归改为最多 3 次。
+  - 保留现有原生 OpenAI、Responses、Gemini、Claude provider 注入边界，没有合并上游的 GLM、TOTP、Telegram 或多账号实现。
+  - 按仓库规则未运行测试；`py_compile`、Ruff、模块导入与配置冒烟检查通过，确认运行时 `RETRY_ON_FAILURE=False`。Black 对本次新增代码无格式差异，但仍报告 `epic_games_service.py` 中三处任务前已有的日志调用排版。
