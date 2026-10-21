@@ -1079,3 +1079,11 @@
   - `RETRY_ON_FAILURE` 默认关闭，由业务层持有明确的重试上限；购物车购买从无界递归改为最多 3 次。
   - 保留现有原生 OpenAI、Responses、Gemini、Claude provider 注入边界，没有合并上游的 GLM、TOTP、Telegram 或多账号实现。
   - 按仓库规则未运行测试；`py_compile`、Ruff、模块导入与配置冒烟检查通过，确认运行时 `RETRY_ON_FAILURE=False`。Black 对本次新增代码无格式差异，但仍报告 `epic_games_service.py` 中三处任务前已有的日志调用排版。
+
+## 2026-10-22 Pillow 安全更新
+
+本机环境和锁文件原先使用 Pillow 11.3.0。Pillow 官方 13.0.0 说明列出了 JPEG 等图像处理安全修复，本项目处理验证码图片，因此需要更新。
+
+pyproject.toml 增加 pillow>=13.0.0，uv.lock 将 Pillow 更新为 13.0.0。本机已有虚拟环境也只替换 Pillow，没有运行全量 uv sync。uv lock --check 和安装元数据核对均通过。
+
+本次没有改动账户、浏览器配置和领取逻辑。按仓库规则未运行测试，没有启动登录、验证码求解或领取流程；未声称这些真实业务流程已经重新验证。任务前已有的 AGENTS.md、CLAUDE.md 修改不属于本次依赖提交。
