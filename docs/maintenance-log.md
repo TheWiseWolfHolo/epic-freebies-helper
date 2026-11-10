@@ -1087,3 +1087,18 @@
 pyproject.toml 增加 pillow>=13.0.0，uv.lock 将 Pillow 更新为 13.0.0。本机已有虚拟环境也只替换 Pillow，没有运行全量 uv sync。uv lock --check 和安装元数据核对均通过。
 
 本次没有改动账户、浏览器配置和领取逻辑。按仓库规则未运行测试，没有启动登录、验证码求解或领取流程；未声称这些真实业务流程已经重新验证。任务前已有的 AGENTS.md、CLAUDE.md 修改不属于本次依赖提交。
+
+## 2026-11-11 GitHub Actions Runner 版本固定与挑战快照归档
+
+- 现象：
+  - 2026-11-07 起 GitHub Actions 将 `ubuntu-latest` 切换到 `ubuntu-26.04` 后，工作流在 `uv run playwright install firefox` 步骤直接报错 `ERROR: Playwright does not support firefox on ubuntu26.04-x64` 并在约 38 秒内退出。
+  - 早先运行（如 `37683499010`）在直接上传 `app/volumes/hcaptcha/.challenge/` 目录时，若子目录名称带有冒号 `:`，会触发 `actions/upload-artifact@v7` 报错 `Contains the following character: Colon :`。
+- 根因判断：
+  - 当前锁定的 `playwright==1.53.0` 尚未支持 Ubuntu 26.04，跟随浮动标签 `ubuntu-latest` 会在 Runner 镜像升级时中断后备浏览器安装。
+  - `actions/upload-artifact@v7` 不允许上传路径中含有英文冒号等受限字符，而 `.challenge` 目录会按原始题干命名子目录。
+- 改动文件：
+  - `.github/workflows/epic-gamer.yml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 将 `epic-gamer` 任务 `runs-on` 固定为 `ubuntu-24.04`。
+  - 上传运行产物前先将 `app/volumes/hcaptcha/.challenge` 打包为 `app/volumes/runtime/hcaptcha-challenge.tar.gz`，随后统一上传 `app/volumes/runtime/`，保留快照内容的同时避免非法路径字符导致上传失败。

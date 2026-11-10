@@ -11,7 +11,7 @@ env:
 
 jobs:
   epic-gamer:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     
     steps:
@@ -76,14 +76,20 @@ jobs:
             echo "- If you later report an issue from a private fork, upload the artifact zip files because maintainers cannot access private Actions pages."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Archive challenge snapshots
+        if: always()
+        run: |
+          if [ -d "app/volumes/hcaptcha/.challenge" ]; then
+            mkdir -p app/volumes/runtime
+            tar -czf app/volumes/runtime/hcaptcha-challenge.tar.gz -C app/volumes/hcaptcha .challenge
+          fi
+
       - name: Upload runtime artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: epic-runtime-${{ github.run_id }}
-          path: |
-            app/volumes/runtime/
-            app/volumes/hcaptcha/.challenge/
+          path: app/volumes/runtime/
           include-hidden-files: true
           retention-days: 7
 
