@@ -63,7 +63,47 @@ def test_gemini_payload_uses_inline_data(image_path):
 
     assert payload["contents"][0]["parts"][1]["inlineData"]["mimeType"] == "image/png"
     assert payload["generationConfig"]["responseMimeType"] == "application/json"
+    assert "thinkingConfig" not in payload["generationConfig"]
     assert headers["x-goog-api-key"] == "secret"
+
+
+def test_gemini_payload_sets_official_thinking_level_and_skips_thought_parts(image_path):
+    adapter = GeminiProvider(
+        provider=LLMProvider.GEMINI,
+        api_key="secret",
+        base_url="https://api.wolfholo.com",
+        model="gemini-3.8-flash",
+        thinking_level="low",
+    )
+    payload, _ = adapter._build_request(
+        images=[image_path],
+        response_schema=ExampleResult,
+        user_prompt="Solve this",
+        description="Return the answer",
+        kwargs={},
+    )
+
+    assert (
+        adapter.endpoint
+        == "https://api.wolfholo.com/v1beta/models/gemini-3.8-flash:generateContent"
+    )
+    assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "LOW"}
+
+    extracted = adapter._extract_text(
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"thought": True, "text": "internal reasoning summary"},
+                            {"text": '{"answer":"ok"}'},
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    assert extracted == '{"answer":"ok"}'
 
 
 def test_claude_payload_uses_native_image_block(image_path):

@@ -59,13 +59,28 @@ class EpicSettings(AgentConfig):
     LLM_API_KEY: SecretStr | None = Field(default=None, description="LLM API key")
     LLM_BASE_URL: str = Field(default="", description="Optional provider API root override")
     LLM_MODEL: str = Field(default="", description="Vision-capable model name")
+    LLM_THINKING_LEVEL: str = Field(
+        default="", description="Optional request-body thinking level: minimal, low, medium, high"
+    )
 
     BROWSER_BACKEND: str = Field(
         default="auto", description="Supported values: auto, camoufox, playwright"
     )
+    BROWSER_PROXY: SecretStr | None = Field(
+        default=None,
+        description="Optional http://, https://, socks4://, or socks5:// browser proxy URL",
+    )
 
     EPIC_EMAIL: str = Field(default_factory=lambda: _env("EPIC_EMAIL"))
     EPIC_PASSWORD: SecretStr = Field(default_factory=lambda: _env("EPIC_PASSWORD"))
+    EPIC_MOBILE_ANDROID: bool = Field(
+        default=False,
+        description="Also discover and claim weekly free Android games via desktop web checkout",
+    )
+    EPIC_MOBILE_IOS: bool = Field(
+        default=False,
+        description="Also discover and claim weekly free iOS games (EU accounts only)",
+    )
     DISABLE_BEZIER_TRAJECTORY: bool = Field(default=False)
     RETRY_ON_FAILURE: bool = Field(
         default=False,
@@ -111,6 +126,7 @@ class EpicSettings(AgentConfig):
             "LLM_PROVIDER",
             "LLM_BASE_URL",
             "LLM_MODEL",
+            "LLM_THINKING_LEVEL",
             "BROWSER_BACKEND",
             "EPIC_EMAIL",
             "CHALLENGE_CLASSIFIER_MODEL",
@@ -121,6 +137,8 @@ class EpicSettings(AgentConfig):
             value = getattr(self, field_name, None)
             if isinstance(value, str):
                 setattr(self, field_name, value.strip())
+
+        self.LLM_THINKING_LEVEL = (self.LLM_THINKING_LEVEL or "").strip().lower()
 
         provider = LLMProvider((self.LLM_PROVIDER or "").strip().lower())
         self.LLM_PROVIDER = provider.value
@@ -158,6 +176,16 @@ class EpicSettings(AgentConfig):
             return "Invalid LLM configuration: LLM_API_KEY is empty."
         if not self.LLM_MODEL:
             return "Invalid LLM configuration: LLM_MODEL is empty."
+        if self.LLM_THINKING_LEVEL and self.LLM_THINKING_LEVEL not in {
+            "minimal",
+            "low",
+            "medium",
+            "high",
+        }:
+            return (
+                "Invalid LLM configuration: LLM_THINKING_LEVEL must be one of "
+                "minimal, low, medium, high."
+            )
 
         return None
 

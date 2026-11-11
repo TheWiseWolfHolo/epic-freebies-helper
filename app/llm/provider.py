@@ -21,6 +21,7 @@ ResponseT = TypeVar("ResponseT", bound=BaseModel)
 _MAX_ERROR_BODY = 1500
 _REQUEST_ATTEMPTS = 3
 _REQUEST_TIMEOUT_SECONDS = 120.0
+_THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
 
 
 def _schema_name(schema: type[BaseModel]) -> str:
@@ -72,14 +73,25 @@ def _extract_json_value(text: str) -> Any:
 class NativeLLMProvider:
     """Common request, validation, retry, and artifact behavior."""
 
-    def __init__(self, *, provider: LLMProvider, api_key: str, base_url: str | None, model: str):
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        api_key: str,
+        base_url: str | None,
+        model: str,
+        thinking_level: str | None = None,
+    ):
         self.provider = provider
         self.api_key = api_key.strip()
         self.model = model.strip()
+        self.thinking_level = (thinking_level or "").strip().lower()
         if not self.api_key:
             raise ValueError("LLM_API_KEY must not be empty")
         if not self.model:
             raise ValueError("LLM_MODEL must not be empty")
+        if self.thinking_level and self.thinking_level not in _THINKING_LEVELS:
+            raise ValueError("LLM_THINKING_LEVEL must be one of: minimal, low, medium, high")
         self.endpoint = build_endpoint(provider, base_url, model=self.model)
         self._last_response: dict[str, Any] | None = None
 
@@ -205,6 +217,8 @@ class OpenAIChatProvider(NativeLLMProvider):
             ],
             "response_format": {"type": "json_object"},
         }
+        if self.thinking_level:
+            payload["reasoning_effort"] = self.thinking_level
         if "temperature" in kwargs:
             payload["temperature"] = kwargs["temperature"]
         return payload, {
@@ -259,6 +273,8 @@ class OpenAIResponsesProvider(NativeLLMProvider):
                 }
             },
         }
+        if self.thinking_level:
+            payload["reasoning"] = {"effort": self.thinking_level}
         return payload, {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -296,12 +312,16 @@ class GeminiProvider(NativeLLMProvider):
             mime_type, encoded = _base64_image(image)
             parts.append({"inlineData": {"mimeType": mime_type, "data": encoded}})
 
+        generation_config: dict[str, Any] = {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": response_schema.model_json_schema(),
+        }
+        if self.thinking_level:
+            generation_config["thinkingConfig"] = {"thinkingLevel": self.thinking_level.upper()}
+
         payload: dict[str, Any] = {
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseJsonSchema": response_schema.model_json_schema(),
-            },
+            "generationConfig": generation_config,
         }
         if description:
             payload["systemInstruction"] = {"parts": [{"text": description}]}
@@ -312,6 +332,13 @@ class GeminiProvider(NativeLLMProvider):
         if not candidates:
             raise ValueError("Gemini response does not contain candidates")
         parts = (candidates[0].get("content") or {}).get("parts") or []
+        non_thought_parts = [
+            str(part.get("text") or "")
+            for part in parts
+            if isinstance(part, dict) and not part.get("thought") and part.get("text")
+        ]
+        if non_thought_parts:
+            return "\n".join(non_thought_parts)
         text = "\n".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
         if text:
             return text
@@ -385,4 +412,5 @@ def create_llm_provider(settings: Any) -> NativeLLMProvider:
         api_key=str(api_key or ""),
         base_url=settings.LLM_BASE_URL,
         model=settings.LLM_MODEL,
+        thinking_level=getattr(settings, "LLM_THINKING_LEVEL", ""),
     )

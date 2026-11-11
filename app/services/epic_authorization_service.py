@@ -25,6 +25,13 @@ from settings import SCREENSHOTS_DIR, settings
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 URL_ORDER_HISTORY = "https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory"
+# Direct Store SSO hand-off endpoint used when a fresh profile completes Account
+# Portal OAuth without issuing Store client tokens (EPIC_EG1).
+URL_STORE_SSO = (
+    "https://www.epicgames.com/id/login/switch-account?lang=en-US"
+    "&redirect_uri=https%3A%2F%2Fstore.epicgames.com%2Ffree-games%3Flang%3Den-US"
+    "&client_id=875a3b57d3a640a6b7f9b4e883463ab4"
+)
 
 
 class EpicAuthenticationFatalError(RuntimeError):
@@ -460,10 +467,75 @@ class EpicAuthorization:
             logger.warning("Failed to verify Epic account session via order history: {!r}", err)
             return False
 
+    async def _establish_store_session(self, timeout_seconds: int = 60) -> bool:
+        """Complete Store OAuth hand-off via switch-account when fresh profiles lack EPIC_EG1."""
+        try:
+            await self.page.goto(URL_STORE_SSO, wait_until="domcontentloaded", timeout=45000)
+        except PlaywrightError as err:
+            logger.warning("Failed to open the Epic store SSO endpoint: {!r}", err)
+            return False
+
+        deadline = time.monotonic() + timeout_seconds
+        account_selected = False
+        while time.monotonic() < deadline:
+            url = self.page.url
+            if not account_selected and "switch-account" in url:
+                account_selected = True
+                if not await self._select_store_sign_in_account():
+                    return False
+                continue
+            if "store.epicgames.com" in url and (
+                await self._get_login_status(timeout_ms=2000, warn_timeout=False) == "true"
+            ):
+                logger.success("Epic Store session established via the store SSO endpoint")
+                return True
+            await self.page.wait_for_timeout(1000)
+        logger.warning("Epic Store sign-in hand-off timed out | current_url='{}'", self.page.url)
+        return False
+
+    async def _select_store_sign_in_account(self) -> bool:
+        """Select the remembered Epic account row on switch-account, matching full email first."""
+        rows = self.page.get_by_role("button").filter(has_text="@")
+        try:
+            for _ in range(20):
+                if await rows.count():
+                    break
+                await self.page.wait_for_timeout(1000)
+            count = await rows.count()
+            if count == 0:
+                logger.warning("Store sign-in chooser exposed no account row")
+                return False
+
+            target_row = rows.first
+            target_email = (settings.EPIC_EMAIL or "").strip().lower()
+            if count > 1 and target_email:
+                exact_match = None
+                for index in range(count):
+                    candidate = rows.nth(index)
+                    text = ((await candidate.text_content()) or "").strip().lower()
+                    if target_email in text:
+                        exact_match = candidate
+                        break
+                if exact_match is not None:
+                    target_row = exact_match
+                else:
+                    domain = target_email.rsplit("@", 1)[-1].strip()
+                    narrowed = rows.filter(has_text=domain) if domain else rows
+                    if await narrowed.count() >= 1:
+                        target_row = narrowed.first
+
+            await target_row.click(timeout=10000, no_wait_after=True)
+            logger.info("Selected the remembered account on the store sign-in chooser")
+            return True
+        except PlaywrightError as err:
+            logger.warning("Failed to select the Epic account on the sign-in chooser: {!r}", err)
+            return False
+
     async def _ensure_store_session_ready(self, timeout_seconds: int = 45) -> None:
         deadline = time.monotonic() + timeout_seconds
         account_probe_at = time.monotonic() + 8
         account_probe_attempted = False
+        store_handoff_attempted = False
 
         while time.monotonic() < deadline:
             if self._needs_privacy_policy_correction():
@@ -483,6 +555,11 @@ class EpicAuthorization:
             if status == "true":
                 return
             if status == "false":
+                if not store_handoff_attempted:
+                    store_handoff_attempted = True
+                    remaining = max(20, int(deadline - time.monotonic()))
+                    if await self._establish_store_session(timeout_seconds=remaining):
+                        return
                 raise RuntimeError(
                     "Epic store still reports isloggedin=false after authentication. "
                     f"current_url={self.page.url}"
@@ -490,6 +567,10 @@ class EpicAuthorization:
 
             if not account_probe_attempted and time.monotonic() >= account_probe_at:
                 account_probe_attempted = True
+                if not store_handoff_attempted:
+                    store_handoff_attempted = True
+                    if await self._establish_store_session(timeout_seconds=25):
+                        return
                 logger.warning(
                     "Epic navigation login marker did not appear after authentication; "
                     "probing account session via order history."
@@ -635,8 +716,17 @@ class EpicAuthorization:
                 return False
 
             if "true" == await self._get_login_status():
-                logger.success("Epic Games is already logged in")
-                return True
+                if await self._has_account_session():
+                    logger.success("Epic Games is already logged in")
+                    return True
+                logger.warning(
+                    "Store reports a logged-in session but the order-history probe rejected it; "
+                    "forcing a fresh login"
+                )
+                await self._goto_claim_page()
+                if await self._has_account_session():
+                    logger.success("Epic Games is already logged in (session confirmed on retry)")
+                    return True
 
             try:
                 if await self._login():

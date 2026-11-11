@@ -53,28 +53,66 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL || secrets.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL || secrets.LLM_MODEL }}
+          LLM_THINKING_LEVEL: ${{ vars.LLM_THINKING_LEVEL || secrets.LLM_THINKING_LEVEL }}
           BROWSER_BACKEND: auto
+          BROWSER_PROXY: ${{ secrets.BROWSER_PROXY }}
+          HEADLESS: virtual
           DISABLE_BEZIER_TRAJECTORY: false
           # 在 Actions 中我们依靠 GitHub 的 cron 触发，所以关闭内部调度器
           ENABLE_APSCHEDULER: false
+          # 移动端周免（默认关闭）；如需开启可在仓库 Actions Variables 设置为 true
+          EPIC_MOBILE_ANDROID: ${{ vars.EPIC_MOBILE_ANDROID || 'false' }}
+          EPIC_MOBILE_IOS: ${{ vars.EPIC_MOBILE_IOS || 'false' }}
           MPLBACKEND: Agg
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PYTHONPATH: app
         run: |
-          echo "🚀 启动定时领取任务（LLM_PROVIDER=${LLM_PROVIDER:-openai}）..."
+          echo "🚀 启动定时领取任务（LLM_PROVIDER=${LLM_PROVIDER:-openai}, LLM_MODEL=${LLM_MODEL:-unset}, THINKING=${LLM_THINKING_LEVEL:-default}）..."
           xvfb-run --auto-servernum --server-num=1 --server-args='-screen 0, 1920x1080x24' uv run app/deploy.py
 
       - name: Write success summary
         if: success()
         run: |
-          {
-            echo "## Run completed"
-            echo
-            echo "The workflow completed successfully."
-            echo
-            echo "- If the game was already in your library, Epic may not send a separate confirmation email. Review the logs and artifacts when verification is needed."
-            echo "- If you later report an issue from a private fork, upload the artifact zip files because maintainers cannot access private Actions pages."
-          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -Rqs -E \
+            'unable to download any more free games|wait 24 hours before trying again|24-hour free-game limit detected' \
+            app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
+            {
+              echo "## Run stopped: Epic 24-hour limit"
+              echo
+              echo "Action 已正常结束，但本次领取未成功：Epic 已限制该账号继续领取免费游戏。"
+              echo
+              echo "No successful claim was confirmed for the affected account. Wait at least 24 hours before running the workflow again."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Run completed"
+              echo
+              echo "The workflow completed successfully."
+              echo
+              echo "- If the game was already in your library, Epic may not send a separate confirmation email. Review the logs and artifacts when verification is needed."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Write failure summary
+        if: failure()
+        run: |
+          if grep -Rqs -E \
+            'unable to download any more free games|wait 24 hours before trying again|free-game redemption rate limit detected' \
+            app/volumes/logs/ app/volumes/runtime/ 2>/dev/null; then
+            {
+              echo "## Claim not completed: Epic 24-hour limit"
+              echo
+              echo "本次领取未成功：Epic 已限制该账号继续领取免费游戏。"
+              echo
+              echo "Wait at least 24 hours before running the workflow again. Repeated retries during this period will not complete the claim."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Claim not completed"
+              echo
+              echo "本次领取未完成，不能视为领取成功。请查看失败步骤和上传的 runtime / log 产物排查具体原因。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Archive challenge snapshots
         if: always()

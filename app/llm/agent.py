@@ -29,8 +29,9 @@ def create_hcaptcha_agent(*, page: Any, settings: Any) -> AgentV:
             )
         reasoner._provider = provider
     logger.info(
-        "hCaptcha LLM provider ready | protocol={} | model={}",
+        "hCaptcha LLM provider ready | protocol={} | model={} | thinking_level={}",
         settings.LLM_PROVIDER,
         settings.LLM_MODEL,
+        getattr(settings, "LLM_THINKING_LEVEL", "") or "default",
     )
     return agent

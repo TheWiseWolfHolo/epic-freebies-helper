@@ -1102,3 +1102,40 @@ pyproject.toml 增加 pillow>=13.0.0，uv.lock 将 Pillow 更新为 13.0.0。本
 - 处理结果：
   - 将 `epic-gamer` 任务 `runs-on` 固定为 `ubuntu-24.04`。
   - 上传运行产物前先将 `app/volumes/hcaptcha/.challenge` 打包为 `app/volumes/runtime/hcaptcha-challenge.tar.gz`，随后统一上传 `app/volumes/runtime/`，保留快照内容的同时避免非法路径字符导致上传失败。
+
+### 2026-11-11 原生 Gemini 思考档位配置与商店会话、按钮、判重及 0 元结账收敛
+
+- 现象：
+  - 原生多协议重构后尚不支持通过请求体显式指定思考强度；对接 `gemini-3.8-flash` 时，`MINIMAL` 已被官方下线（HTTP 400 `Thinking level is unsupported: THINKING_LEVEL_MINIMAL`），最低支持档位为 `"LOW"`，且上游渠道开启 `includeThoughts: true` 时返回 `{"thought": true}` 分片，直接拼接会污染结构化 JSON 提取。
+  - GitHub Actions 等全新浏览器 profile 在完成账号门户登录后未发起商店客户端 OAuth（无 `EPIC_EG1`），导致领取页 `isloggedin=false` 确定性失败；而持久化 profile 下 `isloggedin="true"` 自动续期，底层账号会话过期后仍误判已登录并空转。
+  - Epic 商店改版移除商品页 `data-testid="purchase-cta-button"`（改为 `button.sidebarBuyButton`），且旧回退逻辑使用 `body.text_content()` 读入 `<script>` 字典中的 `Unavailable` / `Coming Soon`，将未领取的周免误判为已拥有。
+  - 同一款游戏的 PC / Android / iOS SKU 共用同一个 `namespace`，按 `namespace` 判重会导致跨平台漏领。
+  - 购物车清理逻辑 `card.query_selector("//span[text()='Free']")` 因前置 `//` 从整页根节点匹配，只要车内存在一款免费商品就会放过同车的付费商品；结账提交前也缺少对 `Total` 应付总额的 0 元校验。
+  - Linux `HEADLESS=virtual` 回退到 Playwright Firefox 时误传 `headless=True`，结账 iframe 销毁可能触发 Firefox 驱动崩溃（Playwright `#35570`），且遇到 Epic 24 小时免费领取限流时缺少显式终止与 Actions 摘要说明。
+- 根因判断：
+  - 模型思考强度应通过各协议原生请求体字段（Gemini `generationConfig.thinkingConfig.thinkingLevel`、OpenAI Chat `reasoning_effort`、Responses `reasoning.effort`）传递，而不应绑定非标准模型后缀 ID。
+  - 商店会话与账号门户会话分属不同 OAuth `client_id`；商品页选择器、订单判重和购物车 XPath 作用域均需与当前 Epic 商店真实 DOM 及多平台 SKU 数据模型对齐。
+- 改动文件：
+  - `app/settings.py`
+  - `app/llm/provider.py`
+  - `app/llm/agent.py`
+  - `app/extensions/playwright_runtime.py`
+  - `app/extensions/playwright_frame_guard.cjs`
+  - `app/services/browser_context.py`
+  - `app/services/epic_authorization_service.py`
+  - `app/services/epic_games_service.py`
+  - `app/services/epic_mobile_service.py`
+  - `app/deploy.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `.env.example`
+  - `docker/.env.example`
+  - `tests/test_llm_provider.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `LLM_THINKING_LEVEL`（支持 `minimal`、`low`、`medium`、`high`），`GeminiProvider` 写入官方 `generationConfig.thinkingConfig.thinkingLevel` 并在提取输出时优先忽略 `thought: true` 分片。
+  - 认证层新增 `URL_STORE_SSO`（`switch-account`）衔接补签商店会话，多账号行优先精确匹配完整 `EPIC_EMAIL`；已登录状态与领取前均通过订单历史接口验活，失效时触发重登或抛出 `EpicSessionExpiredError` 并留存现场快照。
+  - 商品页改为 `PURCHASE_CTA_SELECTORS`（`sidebarBuyButton` 优先）并等待最多 12 秒渲染；整页兜底改用 `inner_text()` 且仅匹配明确拥有词（剔除整页 `UNAVAILABLE` / `COMING SOON` 误判源），同时在 `purchase_debug` 中额外保存 `.html`。
+  - 入口 `_check_orders()` 与结账后复核统一改为 `offerId` 优先判重，并新增默认关闭的移动端周免发现模块（`EPIC_MOBILE_ANDROID` / `EPIC_MOBILE_IOS`）。
+  - 修复 `_empty_cart()` 为严格限定在当前商品卡片内的 `.//*` 相对 XPath（支持移至愿望单及移除兜底，清不空非免费商品立即拒绝结账），并在提交订单前新增 `_verify_zero_total_checkout()` 拦截任何非零 `Total` 应付金额。
+  - 同步浏览器 `HEADLESS=virtual` 修正、`BROWSER_PROXY`、Firefox 驱动已销毁 frame 防护，以及 Epic 24 小时免费领取限流停机与 Actions 摘要分支；未引入上游 GLM 猴补丁、第三方推送或多账号膨胀代码。
+  - 按仓库规则未执行测试；完成 Python 语法编译、Ruff、Black、Node 语法、工作流 YAML 与请求体构造静态核验，线上完整领取待在 GitHub Actions 触发端到端验证。

@@ -12,7 +12,6 @@ using browser automation and scheduling capabilities.
 
 import asyncio
 import json
-import os
 import signal
 from contextlib import suppress
 from datetime import datetime
@@ -22,11 +21,11 @@ from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 from pytz import timezone
 
+from services.browser_context import open_browser_context, resolve_headless_mode
 from services.epic_authorization_service import EpicAuthorization
-from services.browser_context import open_browser_context
-from services.epic_games_service import EpicAgent
-from settings import LOG_DIR
-from settings import settings
+from services.epic_games_service import EpicAgent, EpicFreeGameRateLimitError
+from services.epic_mobile_service import enabled_platforms as enabled_mobile_platforms
+from settings import LOG_DIR, settings
 from utils import init_log
 
 # Initialize logging configuration for runtime, error, and serialization logs
@@ -40,15 +39,21 @@ init_log(
 TIMEZONE = timezone("Asia/Shanghai")
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() not in {"0", "false", "no", "off"}
+def _is_free_game_rate_limit_error(err: Exception) -> bool:
+    current: BaseException | None = err
+    seen: set[int] = set()
+
+    while current is not None and id(current) not in seen:
+        if isinstance(current, EpicFreeGameRateLimitError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+
+    return False
 
 
 @logger.catch(reraise=True)
-async def execute_browser_tasks(headless: bool = True):
+async def execute_browser_tasks(headless: bool | str = True):
     """
     Execute Epic Games free game collection tasks using browser automation.
 
@@ -90,6 +95,19 @@ async def execute_browser_tasks(headless: bool = True):
         logger.debug("Browser tasks execution finished successfully")
 
 
+async def _run_collection_once(headless: bool | str) -> None:
+    try:
+        await execute_browser_tasks(headless=headless)
+    except Exception as err:
+        if _is_free_game_rate_limit_error(err):
+            logger.warning(
+                "Epic 24-hour free-game limit detected; ending this run without retry. "
+                "No successful claim was confirmed for the affected account."
+            )
+            return
+        raise
+
+
 async def deploy():
     """
     Main deployment function that executes Epic Games collection tasks.
@@ -97,7 +115,7 @@ async def deploy():
     This function runs the collection process immediately and optionally
     sets up a scheduled task for automatic recurring execution.
     """
-    headless = _env_bool("HEADLESS", True)
+    headless = resolve_headless_mode()
 
     # Log current configuration for debugging
     sj = settings.model_dump(mode="json")
@@ -106,13 +124,12 @@ async def deploy():
         f"Starting deployment with configuration: {json.dumps(sj, indent=2, ensure_ascii=False)}"
     )
     logger.info(
-        "Effective LLM model routing | provider={} | challenge_classifier={} | "
-        "image_classifier={} | spatial_point_reasoner={} | spatial_path_reasoner={}",
+        "Effective LLM model routing | provider={} | model={} | thinking_level={} | "
+        "mobile_platforms={}",
         settings.LLM_PROVIDER,
-        settings.CHALLENGE_CLASSIFIER_MODEL,
-        settings.IMAGE_CLASSIFIER_MODEL,
-        settings.SPATIAL_POINT_REASONER_MODEL,
-        settings.SPATIAL_PATH_REASONER_MODEL,
+        settings.LLM_MODEL,
+        settings.LLM_THINKING_LEVEL or "default",
+        ",".join(enabled_mobile_platforms()) or "none",
     )
 
     if configuration_error := settings.llm_configuration_error:
@@ -120,7 +137,7 @@ async def deploy():
         raise RuntimeError(configuration_error)
 
     # Execute an immediate collection task
-    await execute_browser_tasks(headless=headless)
+    await _run_collection_once(headless=headless)
 
     # Skip scheduler setup if disabled in configuration
     if not settings.ENABLE_APSCHEDULER:
@@ -132,7 +149,7 @@ async def deploy():
 
     # Strategy 1: Thursday 23:30 to Friday 03:30, every hour (Beijing Time)
     scheduler.add_job(
-        execute_browser_tasks,
+        _run_collection_once,
         trigger=CronTrigger(
             day_of_week="thu", hour="23,0,1,2,3", minute="30", timezone="Asia/Shanghai"
         ),
@@ -145,7 +162,7 @@ async def deploy():
 
     # Strategy 2: Daily at 12:00 PM (Beijing Time)
     scheduler.add_job(
-        execute_browser_tasks,
+        _run_collection_once,
         trigger=CronTrigger(hour="12", minute="0", timezone="Asia/Shanghai"),
         id="daily_epic_games_task",
         name="daily_epic_games_task",
